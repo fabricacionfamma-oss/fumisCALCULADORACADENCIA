@@ -1,3 +1,18 @@
+¡Me parece una idea genial! Agregar un cuadro resumen con la Cadencia Neta Total (Piezas totales ÷ Horas totales) al principio del reporte le da mucho más impacto a nivel gerencial, porque te permite ver la eficiencia real de la máquina de un solo vistazo.
+
+Hice los siguientes ajustes en el código:
+
+Agregué los cálculos para sumar todas las piezas producidas y todas las horas trabajadas por máquina.
+
+Agregué una nueva tabla al inicio del PDF (ahora es el punto 1) que muestra la Máquina, Total Piezas, Total Horas y la Cadencia (Pzs/h).
+
+Añadí una fila resaltada al final de la tabla con el TOTAL GLOBAL, sumando todo para sacar la cadencia promedio neta de todas las máquinas seleccionadas juntas.
+
+Desplacé la numeración de los demás puntos (el rendimiento general pasó a ser el 2, etc.).
+
+Aquí tienes el código completo y actualizado. Cópialo y reemplázalo en tu archivo app.py:
+
+Python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,7 +24,6 @@ from datetime import datetime
 # ==========================================
 # 0. DICCIONARIO DE MÁQUINAS FUMISCOR
 # ==========================================
-# Usamos el mismo diccionario blindado para filtrar solo lo que nos interesa
 MAQUINAS_MAP = {
     # === ESTAMPADO ===
     "P-023": "PRENSAS PROGRESIVAS", "P-024": "PRENSAS PROGRESIVAS", "P-025": "PRENSAS PROGRESIVAS",
@@ -94,32 +108,23 @@ try:
     # --- LIMPIEZA Y FILTRADO ESTRICTO DE MÁQUINAS (SOLO FUMISCOR) ---
     df_filtrado_fecha = df_filtrado_fecha.dropna(subset=['Máquina'])
     
-    # Creamos un mapa limpio para cruzar datos sin importar si están en mayúsculas o con espacios extra
     mapa_limpio = {str(k).strip().upper(): k for k in MAQUINAS_MAP.keys()}
-    
-    # Pasamos las máquinas del Excel a mayúsculas para compararlas
     df_filtrado_fecha['Máquina_Upper'] = df_filtrado_fecha['Máquina'].astype(str).str.strip().str.upper()
-    
-    # FILTRO MAGICO: Solo dejamos las filas cuya máquina exista en el diccionario de Fumiscor
     df_filtrado_fecha = df_filtrado_fecha[df_filtrado_fecha['Máquina_Upper'].isin(mapa_limpio.keys())].copy()
-    
-    # Renombramos la máquina para que tenga el formato bonito del diccionario
     df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina_Upper'].map(mapa_limpio)
 
-    # Opciones de máquina (Selector múltiple) - Ya 100% limpias
     lista_maquinas = sorted(df_filtrado_fecha['Máquina'].unique().tolist())
     
     maquinas_seleccionadas = st.multiselect(
         "⚙️ 2. Selecciona la(s) Máquina(s) a incluir en el PDF:", 
         options=lista_maquinas,
-        default=lista_maquinas # Por defecto selecciona todas las que tuvieron producción
+        default=lista_maquinas
     )
 
     if not maquinas_seleccionadas:
         st.warning("Por favor, selecciona al menos una máquina para generar el reporte.")
         st.stop()
 
-    # Filtrar el DataFrame final por las máquinas seleccionadas en el cuadro
     df = df_filtrado_fecha[df_filtrado_fecha['Máquina'].isin(maquinas_seleccionadas)].copy()
 
     st.success(f"Datos listos para procesar ({len(df)} registros encontrados para Fumiscor).")
@@ -141,6 +146,20 @@ try:
         df['Total_Piezas_Fabricadas'] = df['Buenas'] + df['Retrabajo'] + df['Observadas']
         df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
 
+        # --- NUEVO CÁLCULO: CADENCIA TOTAL NETA ---
+        resumen_cadencia = df.groupby('Máquina').agg(
+            Total_Piezas=('Total_Piezas_Fabricadas', 'sum'),
+            Total_Horas=('Horas_Decimal', 'sum')
+        ).reset_index()
+        resumen_cadencia = resumen_cadencia[resumen_cadencia['Total_Horas'] > 0]
+        resumen_cadencia['Cadencia_Neta'] = resumen_cadencia['Total_Piezas'] / resumen_cadencia['Total_Horas']
+        
+        # Totales globales para la cadencia
+        total_pzs_global = resumen_cadencia['Total_Piezas'].sum()
+        total_hrs_global = resumen_cadencia['Total_Horas'].sum()
+        cadencia_global = total_pzs_global / total_hrs_global if total_hrs_global > 0 else 0
+
+        # --- CÁLCULOS ANTERIORES DE RENDIMIENTO ---
         def calcular_sub_bloque(g):
             if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
             total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
@@ -194,15 +213,43 @@ try:
         pdf.cell(190, 8, f"Periodo: {inicio} al {fin} | Maquina(s): {texto_maquinas}", 0, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 1: Rendimiento General ----
+        # ---- SECCIÓN 1: CADENCIA NETA TOTAL (NUEVA SECCIÓN) ----
         pdf.set_font("Arial", "B", 12)
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(190, 10, "1. Rendimiento General (Por N. de Productos)", 0, 1)
+        pdf.cell(190, 10, "1. Cadencia Total Neta (Por Maquina)", 0, 1)
+        
+        pdf.set_font("Arial", "B", 10)
+        pdf.set_fill_color(*AZUL_FONDO)
+        pdf.cell(70, 8, "Maquina", 1, 0, 'C', True)
+        pdf.cell(40, 8, "Total Piezas", 1, 0, 'C', True)
+        pdf.cell(40, 8, "Total Horas", 1, 0, 'C', True)
+        pdf.cell(40, 8, "Cadencia Neta (Pzs/h)", 1, 1, 'C', True)
+        
+        pdf.set_font("Arial", "", 9)
+        for _, r in resumen_cadencia.iterrows():
+            pdf.cell(70, 7, str(r['Máquina'])[:30], 1)
+            pdf.cell(40, 7, f"{int(r['Total_Piezas'])}", 1, 0, 'C')
+            pdf.cell(40, 7, f"{r['Total_Horas']:.2f}", 1, 0, 'C')
+            pdf.cell(40, 7, f"{r['Cadencia_Neta']:.2f}", 1, 1, 'C')
+        
+        # Fila de Total Global
+        pdf.set_font("Arial", "B", 9)
+        pdf.set_fill_color(230, 230, 230)
+        pdf.cell(70, 7, "TOTAL GLOBAL", 1, 0, 'R', True)
+        pdf.cell(40, 7, f"{int(total_pzs_global)}", 1, 0, 'C', True)
+        pdf.cell(40, 7, f"{total_hrs_global:.2f}", 1, 0, 'C', True)
+        pdf.cell(40, 7, f"{cadencia_global:.2f}", 1, 1, 'C', True)
+        pdf.ln(5)
+
+        # ---- SECCIÓN 2: Rendimiento General (Ahora es el punto 2) ----
+        pdf.set_font("Arial", "B", 12)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(190, 10, "2. Rendimiento General (Por Cantidad de Productos)", 0, 1)
         
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(*AZUL_FONDO)
         pdf.cell(80, 8, "Maquina", 1, 0, 'C', True)
-        pdf.cell(50, 8, "N. Productos", 1, 0, 'C', True)
+        pdf.cell(50, 8, "N. Productos Simultaneos", 1, 0, 'C', True)
         pdf.cell(60, 8, "Promedio (Pzs/h)", 1, 1, 'C', True)
         
         pdf.set_font("Arial", "", 9)
@@ -212,9 +259,9 @@ try:
             pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 2: Real vs Estimado ----
+        # ---- SECCIÓN 3: Real vs Estimado (Ahora es el punto 3) ----
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(190, 10, "2. Rendimiento por Producto (Real vs Estimado)", 0, 1)
+        pdf.cell(190, 10, "3. Rendimiento por Producto (Real vs Estimado)", 0, 1)
         
         pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(*AZUL_FONDO)
@@ -243,14 +290,14 @@ try:
             pdf.set_text_color(0,0,0)
         pdf.ln(5)
 
-        # ---- SECCIÓN 3: Histórico Diario ----
+        # ---- SECCIÓN 4: Histórico Diario (Ahora es el punto 4) ----
         for m_id in maquinas_seleccionadas:
             dat_pdf = prom_h[prom_h['Máquina'] == m_id]
             if dat_pdf.empty: continue
 
             pdf.add_page()
             pdf.set_font("Arial", "B", 12)
-            pdf.cell(190, 10, f"3. Rendimiento Historico Diario: {m_id}", 0, 1)
+            pdf.cell(190, 10, f"4. Rendimiento Historico Diario: {m_id}", 0, 1)
             
             # Tabla del histórico
             pdf.set_font("Arial", "B", 10)
