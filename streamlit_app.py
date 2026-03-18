@@ -63,8 +63,8 @@ try:
     st.info("Obteniendo datos de producción de Fumiscor desde Google Sheets...")
     df_raw = cargar_datos(url_csv)
     
-    # Pre-procesamiento de fechas
-    df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], errors='coerce')
+    # Pre-procesamiento de fechas (CORREGIDO: dayfirst=True para que lea bien Enero)
+    df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], dayfirst=True, errors='coerce')
     df_raw = df_raw.dropna(subset=['Fecha'])
 
     # ==========================================
@@ -131,7 +131,7 @@ try:
         df['Total_Piezas_Fabricadas'] = df['Buenas'] + df['Retrabajo'] + df['Observadas']
         df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
 
-        # --- NUEVO CÁLCULO: CADENCIA TOTAL NETA ---
+        # --- CÁLCULO: CADENCIA TOTAL NETA ---
         resumen_cadencia = df.groupby('Máquina').agg(
             Total_Piezas=('Total_Piezas_Fabricadas', 'sum'),
             Total_Horas=('Horas_Decimal', 'sum')
@@ -144,7 +144,7 @@ try:
         total_hrs_global = resumen_cadencia['Total_Horas'].sum()
         cadencia_global = total_pzs_global / total_hrs_global if total_hrs_global > 0 else 0
 
-        # --- CÁLCULOS ANTERIORES DE RENDIMIENTO ---
+        # --- CÁLCULOS DE RENDIMIENTO ---
         def calcular_sub_bloque(g):
             if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
             total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
@@ -198,7 +198,7 @@ try:
         pdf.cell(190, 8, f"Periodo: {inicio} al {fin} | Maquina(s): {texto_maquinas}", 0, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 1: CADENCIA NETA TOTAL (NUEVA SECCIÓN) ----
+        # ---- SECCIÓN 1: CADENCIA NETA TOTAL ----
         pdf.set_font("Arial", "B", 12)
         pdf.set_text_color(0, 0, 0)
         pdf.cell(190, 10, "1. Cadencia Total Neta (Por Maquina)", 0, 1)
@@ -226,7 +226,7 @@ try:
         pdf.cell(40, 7, f"{cadencia_global:.2f}", 1, 1, 'C', True)
         pdf.ln(5)
 
-        # ---- SECCIÓN 2: Rendimiento General (Ahora es el punto 2) ----
+        # ---- SECCIÓN 2: Rendimiento General ----
         pdf.set_font("Arial", "B", 12)
         pdf.set_text_color(0, 0, 0)
         pdf.cell(190, 10, "2. Rendimiento General (Por Cantidad de Productos)", 0, 1)
@@ -244,7 +244,7 @@ try:
             pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 3: Real vs Estimado (Ahora es el punto 3) ----
+        # ---- SECCIÓN 3: Real vs Estimado ----
         pdf.set_font("Arial", "B", 12)
         pdf.cell(190, 10, "3. Rendimiento por Producto (Real vs Estimado)", 0, 1)
         
@@ -275,7 +275,7 @@ try:
             pdf.set_text_color(0,0,0)
         pdf.ln(5)
 
-        # ---- SECCIÓN 4: Histórico Diario (Ahora es el punto 4) ----
+        # ---- SECCIÓN 4: Histórico Diario ----
         for m_id in maquinas_seleccionadas:
             dat_pdf = prom_h[prom_h['Máquina'] == m_id]
             if dat_pdf.empty: continue
