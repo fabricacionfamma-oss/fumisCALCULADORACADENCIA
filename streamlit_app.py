@@ -7,15 +7,52 @@ from fpdf import FPDF
 from datetime import datetime
 
 # ==========================================
+# 0. DICCIONARIO DE MÁQUINAS FUMISCOR
+# ==========================================
+# Usamos el mismo diccionario blindado para filtrar solo lo que nos interesa
+MAQUINAS_MAP = {
+    # === ESTAMPADO ===
+    "P-023": "PRENSAS PROGRESIVAS", "P-024": "PRENSAS PROGRESIVAS", "P-025": "PRENSAS PROGRESIVAS",
+    "P-026": "PRENSAS PROGRESIVAS GRANDES", "P-027": "PRENSAS PROGRESIVAS GRANDES",
+    "P-028": "PRENSAS PROGRESIVAS GRANDES", "P-029": "PRENSAS PROGRESIVAS GRANDES", "P-030": "PRENSAS PROGRESIVAS GRANDES",
+    "BAL-002": "BALANCIN", "BAL-003": "BALANCIN", "BAL-005": "BALANCIN", "BAL-006": "BALANCIN",
+    "BAL-007": "BALANCIN", "BAL-008": "BALANCIN", "BAL-009": "BALANCIN", "BAL-010": "BALANCIN",
+    "BAL-011": "BALANCIN", "BAL-012": "BALANCIN", "BAL-013": "BALANCIN", "BAL-014": "BALANCIN", "BAL-015": "BALANCIN",
+    "P-011": "HIDRAULICAS", "P-016": "HIDRAULICAS", "P-017": "HIDRAULICAS", "P-018": "HIDRAULICAS",
+    "P-012": "HIDRAULICAS", "P-013": "HIDRAULICAS", "P-014": "HIDRAULICAS",
+    "P-015": "MECANICAS", "P-019": "MECANICAS", "P-020": "MECANICAS", "P-021": "MECANICAS", "P-022": "MECANICAS",
+    "GOF01": "Gofradora",
+    # === SOLDADURA ===
+    "SOP-003": "PRP", "SOP-005": "PRP", "SOP-008": "PRP", "SOP-009": "PRP", "SOP-010": "PRP",
+    "SOP-017": "PRP", "SOP-018": "PRP", "SOP-019": "PRP", "SOP-020": "PRP", "SOP-022": "PRP",
+    "SOP-023": "PRP", "SOP-024": "PRP", "SOP-025": "PRP",
+    "SOP-026": "PRP", "SOP-027": "PRP", "SOP-028": "PRP", "SOP-029": "PRP", "SOP-030": "PRP",
+    "DOB-001": "DOBLADORA", "DOB-002": "DOBLADORA", "DOB-003": "DOBLADORA", "DOB-004": "DOBLADORA",
+    "DOB-005": "DOBLADORA", "DOB-006": "DOBLADORA",
+    "DOB-007": "DOBLADORA", "DOB-008": "DOBLADORA", "DOB-009": "DOBLADORA", "DOB-010": "DOBLADORA",
+    "Cel1 - Rob13 - RUEDA AUX.": "CELDA SOLDADURA", "Cel2 - Rob1 - ALMOHADON": "CELDA SOLDADURA",
+    "Cel3 - Rob14 - HANGERS": "CELDA SOLDADURA", "Cel4 - Rob6 - DOB TORCHA": "CELDA SOLDADURA",
+    "Cel5 - Rob4 - Respaldo 60/40": "CELDA SOLDADURA", "HANGERS NISSAN": "CELDA SOLDADURA",
+    "Celda 01 Fumis": "CELDA SOLDADURA RENAULT", "Celda 02 Fumis": "CELDA SOLDADURA RENAULT",
+    "Celda 03 Fumis": "CELDA SOLDADURA RENAULT", "Celda 04 Fumis": "CELDA SOLDADURA RENAULT",
+    "Celda 05 Fumis": "CELDA SOLDADURA RENAULT", "Celda 06 Fumis": "CELDA SOLDADURA RENAULT",
+    "Celda 07 Fumis": "CELDA SOLDADURA RENAULT", "Celda 08 Fumis": "CELDA SOLDADURA RENAULT",
+    "Celda 09 Fumis": "CELDA SOLDADURA RENAULT", "Celda 10 Fumis": "CELDA SOLDADURA RENAULT",
+    "Celda 11 Fumis": "CELDA SOLDADURA RENAULT", "Celda 12 Fumis": "CELDA SOLDADURA RENAULT",
+    "Celda 13 Fumis": "CELDA SOLDADURA RENAULT", "Celda 14 Fumis": "CELDA SOLDADURA RENAULT",
+    "Celda 15 Fumis": "CELDA SOLDADURA RENAULT"
+}
+
+# ==========================================
 # CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(page_title="Generador de Reportes de Producción", layout="centered")
 st.title("📊 Generador de Reporte Ejecutivo (PDF)")
 
 # ==========================================
-# 1. FUENTE DE DATOS FIJA
+# 1. FUENTE DE DATOS FIJA (FUMISCOR)
 # ==========================================
-SHEET_ID = "1TdQ3yNxx29SgQ7u8oexxlnL80rAcXQuP118wQVBd9ew"
+SHEET_ID = "1wegxZJDFb4_cawUN8cz0RS9oStUFCeg94w72LUHzGsw"
 GID = "315437448"
 url_csv = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 
@@ -24,7 +61,7 @@ def cargar_datos(url):
     return pd.read_csv(url)
 
 try:
-    st.info("Obteniendo datos de producción desde Google Sheets...")
+    st.info("Obteniendo datos de producción de Fumiscor desde Google Sheets...")
     df_raw = cargar_datos(url_csv)
     
     # Pre-procesamiento de fechas
@@ -54,33 +91,38 @@ try:
         st.warning("Por favor, selecciona un rango de fechas completo (Inicio y Fin).")
         st.stop()
 
-    # --- LIMPIEZA Y UNIFICACIÓN DE MÁQUINAS ---
-    df_filtrado_fecha = df_filtrado_fecha.dropna(how='all')
-    df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina'].astype(str).str.strip()
-    df_filtrado_fecha = df_filtrado_fecha[~df_filtrado_fecha['Máquina'].str.lower().isin(['nan', 'none', '', 'null'])]
+    # --- LIMPIEZA Y FILTRADO ESTRICTO DE MÁQUINAS (SOLO FUMISCOR) ---
+    df_filtrado_fecha = df_filtrado_fecha.dropna(subset=['Máquina'])
+    
+    # Creamos un mapa limpio para cruzar datos sin importar si están en mayúsculas o con espacios extra
+    mapa_limpio = {str(k).strip().upper(): k for k in MAQUINAS_MAP.keys()}
+    
+    # Pasamos las máquinas del Excel a mayúsculas para compararlas
+    df_filtrado_fecha['Máquina_Upper'] = df_filtrado_fecha['Máquina'].astype(str).str.strip().str.upper()
+    
+    # FILTRO MAGICO: Solo dejamos las filas cuya máquina exista en el diccionario de Fumiscor
+    df_filtrado_fecha = df_filtrado_fecha[df_filtrado_fecha['Máquina_Upper'].isin(mapa_limpio.keys())].copy()
+    
+    # Renombramos la máquina para que tenga el formato bonito del diccionario
+    df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina_Upper'].map(mapa_limpio)
 
-    # UNIFICAR CELDA 15A y 15B como una sola: "Cell 15 Famma"
-    df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina'].apply(
-        lambda x: 'Cell 15 Famma' if 'Cell 15A' in x or 'Cell 15B' in x else x
-    )
-
-    # Opciones de máquina (Selector múltiple) - Ahora mostrará Cell 15 Famma unificada
+    # Opciones de máquina (Selector múltiple) - Ya 100% limpias
     lista_maquinas = sorted(df_filtrado_fecha['Máquina'].unique().tolist())
     
     maquinas_seleccionadas = st.multiselect(
         "⚙️ 2. Selecciona la(s) Máquina(s) a incluir en el PDF:", 
         options=lista_maquinas,
-        default=lista_maquinas # Por defecto selecciona todas
+        default=lista_maquinas # Por defecto selecciona todas las que tuvieron producción
     )
 
     if not maquinas_seleccionadas:
         st.warning("Por favor, selecciona al menos una máquina para generar el reporte.")
         st.stop()
 
-    # Filtrar el DataFrame final por las máquinas seleccionadas
+    # Filtrar el DataFrame final por las máquinas seleccionadas en el cuadro
     df = df_filtrado_fecha[df_filtrado_fecha['Máquina'].isin(maquinas_seleccionadas)].copy()
 
-    st.success(f"Datos listos para procesar ({len(df)} registros encontrados).")
+    st.success(f"Datos listos para procesar ({len(df)} registros encontrados para Fumiscor).")
     st.divider()
 
     # ==========================================
@@ -103,7 +145,6 @@ try:
             if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
             total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
             cantidad_productos = int(g['Código Producto'].nunique())
-            # Al estar unificadas 15A y 15B, toman el tiempo productivo registrado en esa hora
             total_horas = float(g['Horas_Decimal'].iloc[0]) if not g.empty else 0.0
             ciclos_maquina = total_piezas / cantidad_productos if cantidad_productos > 0 else 0.0
             return pd.Series([total_piezas, total_horas, cantidad_productos, ciclos_maquina], 
