@@ -1,18 +1,3 @@
-¡Me parece una idea genial! Agregar un cuadro resumen con la Cadencia Neta Total (Piezas totales ÷ Horas totales) al principio del reporte le da mucho más impacto a nivel gerencial, porque te permite ver la eficiencia real de la máquina de un solo vistazo.
-
-Hice los siguientes ajustes en el código:
-
-Agregué los cálculos para sumar todas las piezas producidas y todas las horas trabajadas por máquina.
-
-Agregué una nueva tabla al inicio del PDF (ahora es el punto 1) que muestra la Máquina, Total Piezas, Total Horas y la Cadencia (Pzs/h).
-
-Añadí una fila resaltada al final de la tabla con el TOTAL GLOBAL, sumando todo para sacar la cadencia promedio neta de todas las máquinas seleccionadas juntas.
-
-Desplacé la numeración de los demás puntos (el rendimiento general pasó a ser el 2, etc.).
-
-Aquí tienes el código completo y actualizado. Cópialo y reemplázalo en tu archivo app.py:
-
-Python
 import streamlit as st
 import pandas as pd
 import numpy as np
