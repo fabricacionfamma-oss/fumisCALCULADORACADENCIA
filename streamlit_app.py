@@ -57,12 +57,13 @@ def fetch_produccion_diaria(fecha_ini, fecha_fin):
     fin_str = fecha_fin.strftime('%Y-%m-%d')
 
     try:
-        # 1. Piezas por Día (Sin buscar CycleTime)
+        # 1. Piezas por Día (Incluyendo Tiempo Ciclo desde PROD_D_01)
         query_piezas = f"""
             SELECT 
                 p.Date as Fecha,
                 c.Name as Máquina,
                 pr.Code as [Código Producto],
+                MAX(p.CycleTime) as [Tiempo Ciclo],
                 SUM(p.Good) as Buenas,
                 SUM(p.Rework) as Retrabajo,
                 SUM(p.Scrap) as Observadas
@@ -97,7 +98,12 @@ def fetch_produccion_diaria(fecha_ini, fecha_fin):
         return df_merged, None
         
     except Exception as e:
-        return pd.DataFrame(), str(e)
+        # En caso de error, intentamos obtener el esquema para el modo detective
+        try:
+            df_descubrimiento = conn.query("SELECT TOP 5 * FROM PROD_D_01")
+            return df_descubrimiento, f"Error SQL (Probablemente 'CycleTime' se llama diferente). Revisa las columnas en el Detective. Error Original: {e}"
+        except:
+            return pd.DataFrame(), str(e)
 
 # ==========================================
 # 2. FILTROS Y EJECUCIÓN
@@ -119,6 +125,10 @@ if len(rango_fechas) == 2:
 
     if status_error:
         st.error(f"❌ Error de SQL Server: {status_error}")
+        with st.expander("🕵️ Inspeccionar Columnas de PROD_D_01 (Modo Detective)", expanded=True):
+            if not df_raw.empty:
+                st.write("Busca cómo se llama realmente 'Tiempo Ciclo' en estas columnas:")
+                st.dataframe(pd.DataFrame(df_raw.dtypes, columns=['Tipo']).reset_index().rename(columns={'index':'Columna'}))
         st.stop()
 
     if df_raw.empty:
@@ -154,7 +164,7 @@ if len(rango_fechas) == 2:
     # 3. CÁLCULOS BASE
     # ==========================================
     with st.spinner("Calculando métricas y cadencias diarias..."):
-        columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)']
+        columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo']
         for col in columnas_num:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -182,14 +192,19 @@ if len(rango_fechas) == 2:
             Promedio_Pzs_Hora=('Pzs_Hora_Promedio', 'mean')
         ).reset_index().round(2)
 
+        # Cálculo de Producción Real vs Estimada por Producto
         comp_prod = df.groupby(['Máquina', 'Código Producto']).agg(
             Suma_Piezas=('Total_Piezas_Fabricadas', 'sum'),
-            Suma_Horas=('Horas_Decimal', 'sum')
+            Suma_Horas=('Horas_Decimal', 'sum'),
+            Tiempo_Ciclo_Prom=('Tiempo Ciclo', 'mean')
         ).reset_index().dropna()
 
         comp_prod = comp_prod[comp_prod['Suma_Horas'] > 0]
         comp_prod['Real_Pzs_Hora'] = comp_prod['Suma_Piezas'] / comp_prod['Suma_Horas']
-        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora']].round(2)
+        # Fórmula: 60 / Tiempo Ciclo = Estimado de Piezas por Hora
+        comp_prod['Estimado_Pzs_Hora'] = np.where(comp_prod['Tiempo_Ciclo_Prom'] > 0, 60 / comp_prod['Tiempo_Ciclo_Prom'], 0)
+        
+        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora']].round(2)
 
         prom_d = despliegue_dia.groupby(['Máquina', 'Fecha']).agg(P=('Pzs_Hora_Promedio', 'mean')).reset_index().sort_values('Fecha')
 
@@ -231,21 +246,23 @@ if len(rango_fechas) == 2:
             pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 2: Rendimiento Real por Producto ----
+        # ---- SECCIÓN 2: Rendimiento Real por Producto vs Estimado ----
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(190, 10, "2. Rendimiento por Producto (Promedio Real)", 0, 1)
+        pdf.cell(190, 10, "2. Rendimiento por Producto (Real vs Estimado Ingenieria)", 0, 1)
         
         pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(*AZUL_FONDO)
-        pdf.cell(70, 8, "Maquina", 1, 0, 'C', True)
-        pdf.cell(80, 8, "Codigo Producto", 1, 0, 'C', True)
-        pdf.cell(40, 8, "Real (Pzs/h)", 1, 1, 'C', True)
+        pdf.cell(50, 8, "Maquina", 1, 0, 'C', True)
+        pdf.cell(70, 8, "Codigo Producto", 1, 0, 'C', True)
+        pdf.cell(35, 8, "Real (Pzs/h)", 1, 0, 'C', True)
+        pdf.cell(35, 8, "Estimado (Pzs/h)", 1, 1, 'C', True)
         
         pdf.set_font("Arial", "", 9)
         for _, r in comp_prod.iterrows():
-            pdf.cell(70, 7, str(r['Máquina'])[:30], 1)
-            pdf.cell(80, 7, str(r['Código Producto'])[:35], 1)
-            pdf.cell(40, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 1, 'C')
+            pdf.cell(50, 7, str(r['Máquina'])[:22], 1)
+            pdf.cell(70, 7, str(r['Código Producto'])[:35], 1)
+            pdf.cell(35, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
+            pdf.cell(35, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
         # ---- SECCIÓN 3: Histórico Diario ----
@@ -277,7 +294,6 @@ if len(rango_fechas) == 2:
             ax_t.grid(True, linestyle='--', alpha=0.6)
             plt.xticks(rotation=45)
             
-            # --- USO DE TEMPFILE PARA EVITAR ERRORES DE GUARDADO ---
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
                 fig_t.savefig(tmp_img.name, bbox_inches='tight')
                 t_name = tmp_img.name
@@ -286,7 +302,6 @@ if len(rango_fechas) == 2:
             pdf.ln(5)
             pdf.image(t_name, x=15, w=180)
             
-            # Limpieza del archivo temporal
             if os.path.exists(t_name):
                 os.remove(t_name)
 
@@ -295,7 +310,6 @@ if len(rango_fechas) == 2:
         # ==========================================
         fecha_str = f"{inicio.strftime('%d%m%y')}_al_{fin.strftime('%d%m%y')}"
         
-        # Limpiamos caracteres raros para el nombre del PDF
         if len(maquinas_seleccionadas) > 1:
             nombre_archivo = f"Reporte_Produccion_Multi_{fecha_str}.pdf"
         else:
