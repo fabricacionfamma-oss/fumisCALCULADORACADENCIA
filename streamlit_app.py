@@ -56,13 +56,12 @@ def fetch_produccion_diaria(fecha_ini, fecha_fin):
     fin_str = fecha_fin.strftime('%Y-%m-%d')
 
     try:
-        # 1. Piezas por Día
+        # 1. Piezas por Día (Sin buscar CycleTime)
         query_piezas = f"""
             SELECT 
                 p.Date as Fecha,
                 c.Name as Máquina,
                 pr.Code as [Código Producto],
-                pr.CycleTime as [Tiempo Ciclo],
                 SUM(p.Good) as Buenas,
                 SUM(p.Rework) as Retrabajo,
                 SUM(p.Scrap) as Observadas
@@ -70,7 +69,7 @@ def fetch_produccion_diaria(fecha_ini, fecha_fin):
             JOIN CELL c ON p.CellId = c.CellId
             JOIN PRODUCT pr ON p.ProductId = pr.ProductId
             WHERE p.Date BETWEEN '{ini_str}' AND '{fin_str}'
-            GROUP BY p.Date, c.Name, pr.Code, pr.CycleTime
+            GROUP BY p.Date, c.Name, pr.Code
         """
         df_pzs = conn.query(query_piezas)
 
@@ -151,10 +150,10 @@ if len(rango_fechas) == 2:
     st.divider()
 
     # ==========================================
-    # 3. CÁLCULOS BASE (ADAPTADO A DÍAS)
+    # 3. CÁLCULOS BASE (ADAPTADO A DÍAS Y SIN ESTIMADO)
     # ==========================================
     with st.spinner("Calculando métricas y cadencias diarias..."):
-        columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo']
+        columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)']
         for col in columnas_num:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -172,7 +171,7 @@ if len(rango_fechas) == 2:
             return pd.Series([total_piezas, total_horas, cantidad_productos, ciclos_maquina], 
                              index=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos', 'Ciclos_Maquina'])
 
-        # Agrupamos por Fecha (Día) en lugar de Hora
+        # Agrupamos por Fecha (Día)
         despliegue_dia = df.groupby(['Fecha', 'Máquina', 'Horas_Decimal']).apply(calcular_sub_bloque).reset_index()
         despliegue_dia = despliegue_dia.dropna(subset=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
         
@@ -184,18 +183,15 @@ if len(rango_fechas) == 2:
             Promedio_Pzs_Hora=('Pzs_Hora_Promedio', 'mean')
         ).reset_index().round(2)
 
-        # 2. Comparativo Real vs Estimado
+        # 2. Rendimiento Real por Producto (Se elimina la comparación de estimado)
         comp_prod = df.groupby(['Máquina', 'Código Producto']).agg(
             Suma_Piezas=('Total_Piezas_Fabricadas', 'sum'),
-            Suma_Horas=('Horas_Decimal', 'sum'),
-            Promedio_Tiempo_Ciclo=('Tiempo Ciclo', 'mean')
+            Suma_Horas=('Horas_Decimal', 'sum')
         ).reset_index().dropna()
 
         comp_prod = comp_prod[comp_prod['Suma_Horas'] > 0]
         comp_prod['Real_Pzs_Hora'] = comp_prod['Suma_Piezas'] / comp_prod['Suma_Horas']
-        comp_prod['Estimado_Pzs_Hora'] = np.where(comp_prod['Promedio_Tiempo_Ciclo'] > 0, 60 / comp_prod['Promedio_Tiempo_Ciclo'], 0)
-        comp_prod['Diferencia'] = comp_prod['Real_Pzs_Hora'] - comp_prod['Estimado_Pzs_Hora']
-        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora', 'Diferencia']].round(2)
+        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora']].round(2)
 
         # 3. Tendencia Diaria para el gráfico
         prom_d = despliegue_dia.groupby(['Máquina', 'Fecha']).agg(P=('Pzs_Hora_Promedio', 'mean')).reset_index().sort_values('Fecha')
@@ -238,34 +234,21 @@ if len(rango_fechas) == 2:
             pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 2: Real vs Estimado ----
+        # ---- SECCIÓN 2: Rendimiento Real por Producto ----
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(190, 10, "2. Rendimiento por Producto (Real vs Estimado)", 0, 1)
+        pdf.cell(190, 10, "2. Rendimiento por Producto (Promedio Real)", 0, 1)
         
         pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(*AZUL_FONDO)
-        pdf.cell(50, 8, "Maquina", 1, 0, 'C', True)
-        pdf.cell(65, 8, "Codigo Producto", 1, 0, 'C', True)
-        pdf.cell(25, 8, "Real", 1, 0, 'C', True)
-        pdf.cell(25, 8, "Estimado", 1, 0, 'C', True)
-        pdf.cell(25, 8, "Diferencia", 1, 1, 'C', True)
+        pdf.cell(70, 8, "Maquina", 1, 0, 'C', True)
+        pdf.cell(80, 8, "Codigo Producto", 1, 0, 'C', True)
+        pdf.cell(40, 8, "Real (Pzs/h)", 1, 1, 'C', True)
         
         pdf.set_font("Arial", "", 9)
         for _, r in comp_prod.iterrows():
-            pdf.cell(50, 7, str(r['Máquina'])[:25], 1)
-            pdf.cell(65, 7, str(r['Código Producto'])[:30], 1)
-            pdf.cell(25, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
-            pdf.cell(25, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 0, 'C')
-            
-            if r['Diferencia'] > 0:
-                pdf.set_text_color(0, 150, 0)
-                diff_text = f"+{r['Diferencia']:.2f}"
-            else:
-                pdf.set_text_color(200, 0, 0)
-                diff_text = f"{r['Diferencia']:.2f}"
-                
-            pdf.cell(25, 7, diff_text, 1, 1, 'C')
-            pdf.set_text_color(0,0,0)
+            pdf.cell(70, 7, str(r['Máquina'])[:30], 1)
+            pdf.cell(80, 7, str(r['Código Producto'])[:35], 1)
+            pdf.cell(40, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
         # ---- SECCIÓN 3: Histórico Diario ----
