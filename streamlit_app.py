@@ -158,7 +158,8 @@ if len(rango_fechas) == 2:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        df = df[df['Tiempo Producción (Min)'] > 0]
+        # Agregamos .copy() para evitar SettingWithCopyWarning
+        df = df[df['Tiempo Producción (Min)'] > 0].copy()
         df['Total_Piezas_Fabricadas'] = df['Buenas'] + df['Retrabajo'] + df['Observadas']
         df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
 
@@ -166,13 +167,14 @@ if len(rango_fechas) == 2:
             if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
             total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
             cantidad_productos = int(g['Código Producto'].nunique())
+            # Tomamos Horas_Decimal directo de la columna
             total_horas = float(g['Horas_Decimal'].iloc[0]) if not g.empty else 0.0
             ciclos_maquina = total_piezas / cantidad_productos if cantidad_productos > 0 else 0.0
             return pd.Series([total_piezas, total_horas, cantidad_productos, ciclos_maquina], 
                              index=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos', 'Ciclos_Maquina'])
 
-        # Agrupamos por Fecha (Día)
-        despliegue_dia = df.groupby(['Fecha', 'Máquina', 'Horas_Decimal']).apply(calcular_sub_bloque).reset_index()
+        # AGRUPAMOS SOLO POR FECHA Y MÁQUINA (Esto evita el KeyError)
+        despliegue_dia = df.groupby(['Fecha', 'Máquina']).apply(calcular_sub_bloque).reset_index()
         despliegue_dia = despliegue_dia.dropna(subset=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
         
         despliegue_dia['Pzs_Hora_Promedio'] = np.where(despliegue_dia['Total_Horas'] > 0, despliegue_dia['Total_Piezas'] / despliegue_dia['Total_Horas'], 0)
@@ -183,7 +185,7 @@ if len(rango_fechas) == 2:
             Promedio_Pzs_Hora=('Pzs_Hora_Promedio', 'mean')
         ).reset_index().round(2)
 
-        # 2. Rendimiento Real por Producto (Se elimina la comparación de estimado)
+        # 2. Rendimiento Real por Producto
         comp_prod = df.groupby(['Máquina', 'Código Producto']).agg(
             Suma_Piezas=('Total_Piezas_Fabricadas', 'sum'),
             Suma_Horas=('Horas_Decimal', 'sum')
