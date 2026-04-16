@@ -196,7 +196,9 @@ if len(rango_fechas) == 2:
         comp_prod = comp_prod[comp_prod['Suma_Horas'] > 0]
         comp_prod['Real_Pzs_Hora'] = comp_prod['Suma_Piezas'] / comp_prod['Suma_Horas']
         comp_prod['Estimado_Pzs_Hora'] = np.where(comp_prod['Tiempo_Ciclo_DB'] > 0, 60 / comp_prod['Tiempo_Ciclo_DB'], 0)
-        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Tiempo_Ciclo_DB', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora']].round(3)
+        
+        # Eliminamos el TC DB para imprimir limpio en el PDF Ejecutivo
+        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora']].round(3)
 
         prom_d = despliegue_dia[['Máquina', 'Fecha', 'Pzs_Hora_Promedio', 'Cantidad_Productos']].copy()
         prom_d.rename(columns={'Pzs_Hora_Promedio': 'P'}, inplace=True)
@@ -239,25 +241,23 @@ if len(rango_fechas) == 2:
             pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 2: Rendimiento Real por Producto ----
+        # ---- SECCIÓN 2: Rendimiento Real por Producto vs Estimado ----
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(190, 10, clean_text("2. Rendimiento por Producto (Validacion TC vs DB)"), 0, 1)
+        pdf.cell(190, 10, clean_text("2. Rendimiento por Producto (Real vs Estimado Ingenieria)"), 0, 1)
         
-        pdf.set_font("Arial", "B", 8)
+        pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(*AZUL_FONDO)
-        pdf.cell(45, 8, "Maquina", 1, 0, 'C', True)
-        pdf.cell(65, 8, "Codigo Producto", 1, 0, 'C', True)
-        pdf.cell(20, 8, "TC DB(min)", 1, 0, 'C', True)
-        pdf.cell(30, 8, "Real (Pzs/h)", 1, 0, 'C', True)
-        pdf.cell(30, 8, "Est. (Pzs/h)", 1, 1, 'C', True)
+        pdf.cell(50, 8, "Maquina", 1, 0, 'C', True)
+        pdf.cell(70, 8, "Codigo Producto", 1, 0, 'C', True)
+        pdf.cell(35, 8, "Real (Pzs/h)", 1, 0, 'C', True)
+        pdf.cell(35, 8, "Est. (Pzs/h)", 1, 1, 'C', True)
         
-        pdf.set_font("Arial", "", 8)
+        pdf.set_font("Arial", "", 9)
         for _, r in comp_prod.iterrows():
-            pdf.cell(45, 7, clean_text(r['Máquina'])[:22], 1)
-            pdf.cell(65, 7, clean_text(r['Código Producto'])[:35], 1)
-            pdf.cell(20, 7, f"{r['Tiempo_Ciclo_DB']:.3f}", 1, 0, 'C')
-            pdf.cell(30, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
-            pdf.cell(30, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
+            pdf.cell(50, 7, clean_text(r['Máquina'])[:22], 1)
+            pdf.cell(70, 7, clean_text(r['Código Producto'])[:35], 1)
+            pdf.cell(35, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
+            pdf.cell(35, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
         # ---- SECCIÓN 3: Histórico Diario ----
@@ -310,11 +310,15 @@ if len(rango_fechas) == 2:
     # ==========================================
     def generar_pdf_auditoria(df_base):
         df_audit = df_base[['Fecha', 'Máquina', 'Código Producto', 'Tiempo Ciclo']].copy()
-        df_audit = df_audit.dropna(subset=['Tiempo Ciclo'])
+        
+        # ELIMINAMOS NULOS Y VALORES 0.000 PARA QUE NO SEAN CONSIDERADOS COMO CAMBIOS
+        df_audit = df_audit[(df_audit['Tiempo Ciclo'].notna()) & (df_audit['Tiempo Ciclo'] > 0)].copy()
         df_audit = df_audit.sort_values(by=['Máquina', 'Código Producto', 'Fecha'])
         
         df_audit['TC_Anterior'] = df_audit.groupby(['Máquina', 'Código Producto'])['Tiempo Ciclo'].shift(1)
-        df_audit['Hubo_Cambio'] = (df_audit['TC_Anterior'].notna()) & (df_audit['Tiempo Ciclo'] != df_audit['TC_Anterior'])
+        
+        # Redondeamos a 3 decimales para evitar que pequeñas variaciones se marquen
+        df_audit['Hubo_Cambio'] = (df_audit['TC_Anterior'].notna()) & (df_audit['Tiempo Ciclo'].round(3) != df_audit['TC_Anterior'].round(3))
         
         df_imprimir = df_audit[df_audit['TC_Anterior'].isna() | df_audit['Hubo_Cambio']].copy()
 
@@ -363,7 +367,6 @@ if len(rango_fechas) == 2:
             if es_alerta:
                 pdf.set_fill_color(*ROJO_ALERTA)
                 pdf.set_font("Arial", "B", 8)
-                # Se eliminó el emoji para evitar el UnicodeEncodeError
                 estado = "CAMBIO DETECTADO" 
             else:
                 pdf.set_fill_color(255, 255, 255)
