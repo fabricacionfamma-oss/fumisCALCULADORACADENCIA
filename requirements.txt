@@ -1,5 +1,7 @@
 streamlit
 pandas
-fpdf
 numpy
 matplotlib
+fpdf
+SQLAlchemy
+pymssql
