@@ -44,8 +44,8 @@ MAQUINAS_MAP = {
 # ==========================================
 # CONFIGURACIÓN DE PÁGINA
 # ==========================================
-st.set_page_config(page_title="Generador de Reportes de Producción", layout="centered")
-st.title("📊 Generador de Reporte Ejecutivo (PDF)")
+st.set_page_config(page_title="Generador de Reportes de Producción", layout="centered", page_icon="📊")
+st.title("📊 Generador de Reportes (Producción y Auditoría)")
 
 # ==========================================
 # 1. FUNCIÓN DE EXTRACCIÓN SQL
@@ -135,7 +135,7 @@ if len(rango_fechas) == 2:
     lista_maquinas = sorted(df_raw['Máquina'].unique().tolist())
     
     maquinas_seleccionadas = st.multiselect(
-        "⚙️ 2. Selecciona la(s) Máquina(s) a incluir en el PDF:", 
+        "⚙️ 2. Selecciona la(s) Máquina(s) a procesar:", 
         options=lista_maquinas,
         default=lista_maquinas
     )
@@ -149,7 +149,7 @@ if len(rango_fechas) == 2:
     st.divider()
 
     # ==========================================
-    # 3. CÁLCULOS BASE
+    # 3. CÁLCULOS BASE (REPORTE EJECUTIVO)
     # ==========================================
     with st.spinner("Calculando métricas..."):
         columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo']
@@ -157,9 +157,9 @@ if len(rango_fechas) == 2:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        df = df[df['Tiempo Producción (Min)'] > 0].copy()
-        df['Total_Piezas_Fabricadas'] = df['Buenas'] + df['Retrabajo'] + df['Observadas']
-        df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
+        df_calc = df[df['Tiempo Producción (Min)'] > 0].copy()
+        df_calc['Total_Piezas_Fabricadas'] = df_calc['Buenas'] + df_calc['Retrabajo'] + df_calc['Observadas']
+        df_calc['Horas_Decimal'] = df_calc['Tiempo Producción (Min)'] / 60
 
         def calcular_sub_bloque(g):
             if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0})
@@ -169,7 +169,7 @@ if len(rango_fechas) == 2:
             return pd.Series([total_piezas, total_horas, cantidad_productos], 
                              index=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
 
-        despliegue_dia = df.groupby(['Fecha', 'Máquina']).apply(calcular_sub_bloque).reset_index()
+        despliegue_dia = df_calc.groupby(['Fecha', 'Máquina']).apply(calcular_sub_bloque).reset_index()
         despliegue_dia = despliegue_dia.dropna(subset=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
         
         despliegue_dia['Pzs_Hora_Promedio'] = np.where(despliegue_dia['Total_Horas'] > 0, despliegue_dia['Total_Piezas'] / despliegue_dia['Total_Horas'], 0)
@@ -179,8 +179,7 @@ if len(rango_fechas) == 2:
             Promedio_Pzs_Hora=('Pzs_Hora_Promedio', 'mean')
         ).reset_index().round(2)
 
-        # SECCIÓN 2: Real vs Estimado con TC de validación
-        comp_prod = df.groupby(['Máquina', 'Código Producto']).agg(
+        comp_prod = df_calc.groupby(['Máquina', 'Código Producto']).agg(
             Suma_Piezas=('Total_Piezas_Fabricadas', 'sum'),
             Suma_Horas=('Horas_Decimal', 'sum'),
             Tiempo_Ciclo_DB=('Tiempo Ciclo', 'mean')
@@ -188,10 +187,7 @@ if len(rango_fechas) == 2:
 
         comp_prod = comp_prod[comp_prod['Suma_Horas'] > 0]
         comp_prod['Real_Pzs_Hora'] = comp_prod['Suma_Piezas'] / comp_prod['Suma_Horas']
-        
-        # El estimado se calcula sobre el TC que trae la base de datos (Fórmula en minutos)
         comp_prod['Estimado_Pzs_Hora'] = np.where(comp_prod['Tiempo_Ciclo_DB'] > 0, 60 / comp_prod['Tiempo_Ciclo_DB'], 0)
-        
         comp_prod = comp_prod[['Máquina', 'Código Producto', 'Tiempo_Ciclo_DB', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora']].round(3)
 
         prom_d = despliegue_dia[['Máquina', 'Fecha', 'Pzs_Hora_Promedio', 'Cantidad_Productos']].copy()
@@ -199,9 +195,9 @@ if len(rango_fechas) == 2:
         prom_d = prom_d.sort_values('Fecha')
 
     # ==========================================
-    # 4. GENERACIÓN DEL PDF EJECUTIVO
+    # 4. GENERACIÓN DE PDF - REPORTE EJECUTIVO
     # ==========================================
-    with st.spinner("Armando el documento PDF..."):
+    def generar_pdf_ejecutivo():
         pdf = FPDF()
         AZUL_TITULO = (0, 51, 102)
         AZUL_FONDO = (204, 229, 255)
@@ -213,7 +209,6 @@ if len(rango_fechas) == 2:
         
         pdf.set_font("Arial", "I", 11)
         pdf.set_text_color(100, 100, 100)
-        
         texto_maquinas = "Multiples Seleccionadas" if len(maquinas_seleccionadas) > 1 else maquinas_seleccionadas[0]
         pdf.cell(190, 8, f"Periodo: {inicio} al {fin} | Maquina(s): {texto_maquinas}", 0, 1, 'C')
         pdf.ln(5)
@@ -236,7 +231,7 @@ if len(rango_fechas) == 2:
             pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 2: Rendimiento Real por Producto con TC de la DB ----
+        # ---- SECCIÓN 2: Rendimiento Real por Producto ----
         pdf.set_font("Arial", "B", 12)
         pdf.cell(190, 10, "2. Rendimiento por Producto (Validacion TC vs DB)", 0, 1)
         
@@ -244,7 +239,7 @@ if len(rango_fechas) == 2:
         pdf.set_fill_color(*AZUL_FONDO)
         pdf.cell(45, 8, "Maquina", 1, 0, 'C', True)
         pdf.cell(65, 8, "Codigo Producto", 1, 0, 'C', True)
-        pdf.cell(20, 8, "TC DB(min)", 1, 0, 'C', True) # Nueva columna de validación
+        pdf.cell(20, 8, "TC DB(min)", 1, 0, 'C', True)
         pdf.cell(30, 8, "Real (Pzs/h)", 1, 0, 'C', True)
         pdf.cell(30, 8, "Est. (Pzs/h)", 1, 1, 'C', True)
         
@@ -257,7 +252,7 @@ if len(rango_fechas) == 2:
             pdf.cell(30, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 3: Histórico Diario con Cant. Productos ----
+        # ---- SECCIÓN 3: Histórico Diario ----
         for m_id in maquinas_seleccionadas:
             dat_pdf = prom_d[prom_d['Máquina'] == m_id]
             if dat_pdf.empty: continue
@@ -270,7 +265,7 @@ if len(rango_fechas) == 2:
             pdf.set_fill_color(*AZUL_FONDO)
             pdf.cell(60, 8, "Maquina", 1, 0, 'C', True)
             pdf.cell(40, 8, "Fecha", 1, 0, 'C', True)
-            pdf.cell(40, 8, "Cant. Productos", 1, 0, 'C', True) # Columna solicitada
+            pdf.cell(40, 8, "Cant. Productos", 1, 0, 'C', True)
             pdf.cell(50, 8, "Promedio Diario", 1, 1, 'C', True)
             
             pdf.set_font("Arial", "", 9)
@@ -295,34 +290,131 @@ if len(rango_fechas) == 2:
             
             pdf.ln(5)
             pdf.image(t_name, x=15, w=180)
-            
-            if os.path.exists(t_name):
-                os.remove(t_name)
+            if os.path.exists(t_name): os.remove(t_name)
 
-        # ==========================================
-        # DESCARGA DEL ARCHIVO FINAL
-        # ==========================================
         fecha_str = f"{inicio.strftime('%d%m%y')}_al_{fin.strftime('%d%m%y')}"
+        nombre_pdf = f"Reporte_Produccion_{fecha_str}.pdf"
+        pdf.output(nombre_pdf)
+        return nombre_pdf
+
+    # ==========================================
+    # 5. GENERACIÓN DE PDF - AUDITORÍA DE TC
+    # ==========================================
+    def generar_pdf_auditoria(df_base):
+        # Filtramos y preparamos datos
+        df_audit = df_base[['Fecha', 'Máquina', 'Código Producto', 'Tiempo Ciclo']].copy()
+        df_audit = df_audit.dropna(subset=['Tiempo Ciclo'])
+        df_audit = df_audit.sort_values(by=['Máquina', 'Código Producto', 'Fecha'])
         
-        if len(maquinas_seleccionadas) > 1:
-            nombre_archivo = f"Reporte_Produccion_Multi_{fecha_str}.pdf"
-        else:
-            nombre_limpio = ''.join(e for e in maquinas_seleccionadas[0] if e.isalnum())
-            nombre_archivo = f"Reporte_Produccion_{nombre_limpio}_{fecha_str}.pdf"
-            
-        pdf.output(nombre_archivo)
+        # Calcular variación
+        df_audit['TC_Anterior'] = df_audit.groupby(['Máquina', 'Código Producto'])['Tiempo Ciclo'].shift(1)
+        df_audit['Hubo_Cambio'] = (df_audit['TC_Anterior'].notna()) & (df_audit['Tiempo Ciclo'] != df_audit['TC_Anterior'])
+        
+        # Dejamos solo el registro inicial de cada pieza y los días donde hubo cambios
+        df_imprimir = df_audit[df_audit['TC_Anterior'].isna() | df_audit['Hubo_Cambio']].copy()
 
-    with open(nombre_archivo, "rb") as f:
-        st.download_button(
-            label="📥 Descargar Reporte Ejecutivo en PDF", 
-            data=f, 
-            file_name=nombre_archivo,
-            mime="application/pdf",
-            use_container_width=True
-        )
+        pdf = FPDF(orientation='L')
+        AZUL_TITULO = (0, 51, 102)
+        AZUL_FONDO = (204, 229, 255)
+        ROJO_ALERTA = (255, 204, 204)
 
-    if os.path.exists(nombre_archivo):
-        os.remove(nombre_archivo)
+        pdf.add_page()
+        pdf.set_font("Arial", "B", 16)
+        pdf.set_text_color(*AZUL_TITULO)
+        pdf.cell(277, 10, "REPORTE DE AUDITORIA: VARIACIONES EN TIEMPO DE CICLO", 0, 1, 'C')
+        
+        pdf.set_font("Arial", "I", 10)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(277, 6, f"Periodo: {inicio.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}", 0, 1, 'C')
+        pdf.ln(5)
+
+        pdf.set_font("Arial", "B", 9)
+        pdf.set_fill_color(*AZUL_FONDO)
+        pdf.set_text_color(0, 0, 0)
+        
+        pdf.cell(35, 8, "Fecha", 1, 0, 'C', True)
+        pdf.cell(50, 8, "Maquina", 1, 0, 'C', True)
+        pdf.cell(80, 8, "Codigo Producto", 1, 0, 'C', True)
+        pdf.cell(35, 8, "TC Anterior (min)", 1, 0, 'C', True)
+        pdf.cell(35, 8, "TC Reportado (min)", 1, 0, 'C', True)
+        pdf.cell(42, 8, "Estado / Alerta", 1, 1, 'C', True)
+
+        pdf.set_font("Arial", "", 8)
+
+        for _, row in df_imprimir.iterrows():
+            if pdf.get_y() > 180:
+                pdf.add_page()
+                pdf.set_font("Arial", "B", 9)
+                pdf.set_fill_color(*AZUL_FONDO)
+                pdf.cell(35, 8, "Fecha", 1, 0, 'C', True)
+                pdf.cell(50, 8, "Maquina", 1, 0, 'C', True)
+                pdf.cell(80, 8, "Codigo Producto", 1, 0, 'C', True)
+                pdf.cell(35, 8, "TC Anterior (min)", 1, 0, 'C', True)
+                pdf.cell(35, 8, "TC Reportado (min)", 1, 0, 'C', True)
+                pdf.cell(42, 8, "Estado / Alerta", 1, 1, 'C', True)
+                pdf.set_font("Arial", "", 8)
+
+            es_alerta = row['Hubo_Cambio']
+            if es_alerta:
+                pdf.set_fill_color(*ROJO_ALERTA)
+                pdf.set_font("Arial", "B", 8)
+                estado = "⚠️ CAMBIO DETECTADO"
+            else:
+                pdf.set_fill_color(255, 255, 255)
+                pdf.set_font("Arial", "", 8)
+                estado = "Valor Inicial"
+
+            tc_ant = f"{row['TC_Anterior']:.3f}" if pd.notna(row['TC_Anterior']) else "-"
+            tc_act = f"{row['Tiempo Ciclo']:.3f}"
+            fecha_str = row['Fecha'].strftime('%d/%m/%Y')
+
+            pdf.cell(35, 7, fecha_str, 1, 0, 'C', fill=es_alerta)
+            pdf.cell(50, 7, str(row['Máquina'])[:25], 1, 0, 'L', fill=es_alerta)
+            pdf.cell(80, 7, str(row['Código Producto'])[:45], 1, 0, 'L', fill=es_alerta)
+            pdf.cell(35, 7, tc_ant, 1, 0, 'C', fill=es_alerta)
+            pdf.cell(35, 7, tc_act, 1, 0, 'C', fill=es_alerta)
+            pdf.cell(42, 7, estado, 1, 1, 'C', fill=es_alerta)
+
+        fecha_str = f"{inicio.strftime('%d%m%y')}_al_{fin.strftime('%d%m%y')}"
+        nombre_pdf = f"Auditoria_TC_{fecha_str}.pdf"
+        pdf.output(nombre_pdf)
+        return nombre_pdf
+
+    # ==========================================
+    # 6. BOTONES DE DESCARGA EN INTERFAZ
+    # ==========================================
+    with st.spinner("Renderizando documentos PDF..."):
+        file_ejecutivo = generar_pdf_ejecutivo()
+        file_auditoria = generar_pdf_auditoria(df)
+
+    st.write("### 📥 Descarga de Reportes")
+    col_btn1, col_btn2 = st.columns(2)
+
+    with col_btn1:
+        with open(file_ejecutivo, "rb") as f_ej:
+            st.download_button(
+                label="📊 Descargar Reporte Ejecutivo (Producción)", 
+                data=f_ej, 
+                file_name=file_ejecutivo,
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary"
+            )
+
+    with col_btn2:
+        with open(file_auditoria, "rb") as f_au:
+            st.download_button(
+                label="🕵️ Descargar Auditoría de Cambios de TC", 
+                data=f_au, 
+                file_name=file_auditoria,
+                mime="application/pdf",
+                use_container_width=True,
+                type="secondary"
+            )
+
+    # Limpieza de archivos temporales
+    if os.path.exists(file_ejecutivo): os.remove(file_ejecutivo)
+    if os.path.exists(file_auditoria): os.remove(file_auditoria)
 
 else:
     st.warning("Por favor, selecciona un rango de fechas completo (Inicio y Fin).")
