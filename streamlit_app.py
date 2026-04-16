@@ -10,7 +10,6 @@ from datetime import datetime
 # 0. DICCIONARIO DE MÁQUINAS FUMISCOR
 # ==========================================
 MAQUINAS_MAP = {
-    # === ESTAMPADO ===
     "P-023": "PRENSAS PROGRESIVAS", "P-024": "PRENSAS PROGRESIVAS", "P-025": "PRENSAS PROGRESIVAS",
     "P-026": "PRENSAS PROGRESIVAS GRANDES", "P-027": "PRENSAS PROGRESIVAS GRANDES",
     "P-028": "PRENSAS PROGRESIVAS GRANDES", "P-029": "PRENSAS PROGRESIVAS GRANDES", "P-030": "PRENSAS PROGRESIVAS GRANDES",
@@ -21,7 +20,6 @@ MAQUINAS_MAP = {
     "P-012": "HIDRAULICAS", "P-013": "HIDRAULICAS", "P-014": "HIDRAULICAS",
     "P-015": "MECANICAS", "P-019": "MECANICAS", "P-020": "MECANICAS", "P-021": "MECANICAS", "P-022": "MECANICAS",
     "GOF01": "Gofradora",
-    # === SOLDADURA ===
     "SOP-003": "PRP", "SOP-005": "PRP", "SOP-008": "PRP", "SOP-009": "PRP", "SOP-010": "PRP",
     "SOP-017": "PRP", "SOP-018": "PRP", "SOP-019": "PRP", "SOP-020": "PRP", "SOP-022": "PRP",
     "SOP-023": "PRP", "SOP-024": "PRP", "SOP-025": "PRP",
@@ -49,44 +47,43 @@ st.set_page_config(page_title="Generador de Reportes de Producción", layout="ce
 st.title("📊 Generador de Reporte Ejecutivo (PDF)")
 
 # ==========================================
-# 1. FUNCIÓN DE EXTRACCIÓN SQL (CRUCE D_01 y D_03)
+# 1. FUNCIÓN DE EXTRACCIÓN SQL (DIARIA)
 # ==========================================
 @st.cache_data(ttl=300)
-def fetch_produccion_hora(fecha_ini, fecha_fin):
+def fetch_produccion_diaria(fecha_ini, fecha_fin):
     conn = st.connection("wii_bi", type="sql")
     ini_str = fecha_ini.strftime('%Y-%m-%d')
     fin_str = fecha_fin.strftime('%Y-%m-%d')
 
     try:
-        # 1. Obtenemos las Piezas por Hora desde PROD_D_01
+        # 1. Piezas por Día
         query_piezas = f"""
             SELECT 
-                CAST(p.Date as DATE) as Fecha,
+                p.Date as Fecha,
                 c.Name as Máquina,
                 pr.Code as [Código Producto],
+                pr.CycleTime as [Tiempo Ciclo],
                 SUM(p.Good) as Buenas,
                 SUM(p.Rework) as Retrabajo,
-                SUM(p.Scrap) as Observadas,
-                DATEPART(HOUR, p.Date) as Hora
+                SUM(p.Scrap) as Observadas
             FROM PROD_D_01 p 
             JOIN CELL c ON p.CellId = c.CellId
             JOIN PRODUCT pr ON p.ProductId = pr.ProductId
-            WHERE CAST(p.Date as DATE) BETWEEN '{ini_str}' AND '{fin_str}'
-            GROUP BY CAST(p.Date as DATE), c.Name, pr.Code, DATEPART(HOUR, p.Date)
+            WHERE p.Date BETWEEN '{ini_str}' AND '{fin_str}'
+            GROUP BY p.Date, c.Name, pr.Code, pr.CycleTime
         """
         df_pzs = conn.query(query_piezas)
 
-        # 2. Obtenemos el Tiempo Productivo por Hora desde PROD_D_03
+        # 2. Tiempo Productivo por Día
         query_tiempos = f"""
             SELECT 
-                CAST(p.Date as DATE) as Fecha,
+                p.Date as Fecha,
                 c.Name as Máquina,
-                DATEPART(HOUR, p.Date) as Hora,
                 SUM(p.ProductiveTime) as [Tiempo Producción (Min)]
             FROM PROD_D_03 p 
             JOIN CELL c ON p.CellId = c.CellId
-            WHERE CAST(p.Date as DATE) BETWEEN '{ini_str}' AND '{fin_str}'
-            GROUP BY CAST(p.Date as DATE), c.Name, DATEPART(HOUR, p.Date)
+            WHERE p.Date BETWEEN '{ini_str}' AND '{fin_str}'
+            GROUP BY p.Date, c.Name
         """
         df_times = conn.query(query_tiempos)
 
@@ -94,11 +91,8 @@ def fetch_produccion_hora(fecha_ini, fecha_fin):
             return pd.DataFrame(), None
 
         # 3. Cruzamos ambas tablas
-        df_merged = pd.merge(df_pzs, df_times, on=['Fecha', 'Máquina', 'Hora'], how='left')
-        
-        # Rellenamos nulos y forzamos el Tiempo de Ciclo a 0 (ya que no lo sacamos de BD para evitar crash)
+        df_merged = pd.merge(df_pzs, df_times, on=['Fecha', 'Máquina'], how='left')
         df_merged['Tiempo Producción (Min)'] = df_merged['Tiempo Producción (Min)'].fillna(0)
-        df_merged['Tiempo Ciclo'] = 0 
         
         return df_merged, None
         
@@ -120,26 +114,21 @@ rango_fechas = st.date_input(
 if len(rango_fechas) == 2:
     inicio, fin = rango_fechas
     
-    with st.spinner("Conectando a SQL Server y cruzando tablas D_01 y D_03..."):
-        df_raw, status_error = fetch_produccion_hora(inicio, fin)
+    with st.spinner("Conectando a SQL Server (Extrayendo Producción Diaria)..."):
+        df_raw, status_error = fetch_produccion_diaria(inicio, fin)
 
     if status_error:
         st.error(f"❌ Error de SQL Server: {status_error}")
         st.stop()
 
     if df_raw.empty:
-        st.warning("La consulta fue exitosa pero no hay datos de producción para estas fechas.")
+        st.warning("No hay datos de producción para estas fechas.")
         st.stop()
 
-    with st.expander("🕵️ Inspeccionar Datos Cruzados (Modo Detective)", expanded=False):
-        st.success(f"✅ Se obtuvieron {len(df_raw)} bloques horarios de la base de datos.")
-        st.dataframe(df_raw.head(50), use_container_width=True)
-
-    # Pre-procesamiento de datos extraídos
+    # Pre-procesamiento de fechas y máquinas
     df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], errors='coerce')
     df_raw = df_raw.dropna(subset=['Fecha', 'Máquina'])
     
-    # Limpieza de Nombres de Máquinas
     mapa_limpio = {str(k).strip().upper(): k for k in MAQUINAS_MAP.keys()}
     df_raw['Máquina_Upper'] = df_raw['Máquina'].astype(str).str.strip().str.upper()
     df_raw = df_raw[df_raw['Máquina_Upper'].isin(mapa_limpio.keys())].copy()
@@ -154,7 +143,7 @@ if len(rango_fechas) == 2:
     )
 
     if not maquinas_seleccionadas:
-        st.warning("Por favor, selecciona al menos una máquina para generar el reporte.")
+        st.warning("Por favor, selecciona al menos una máquina.")
         st.stop()
 
     df = df_raw[df_raw['Máquina'].isin(maquinas_seleccionadas)].copy()
@@ -162,17 +151,15 @@ if len(rango_fechas) == 2:
     st.divider()
 
     # ==========================================
-    # 3. CÁLCULOS BASE
+    # 3. CÁLCULOS BASE (ADAPTADO A DÍAS)
     # ==========================================
-    with st.spinner("Calculando métricas y cadencias..."):
-        columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo', 'Hora']
+    with st.spinner("Calculando métricas y cadencias diarias..."):
+        columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo']
         for col in columnas_num:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
         df = df[df['Tiempo Producción (Min)'] > 0]
-        df['Hora_Real'] = df['Hora'].astype(int)
-        df['Orden_Hora'] = df['Hora_Real'].apply(lambda x: x if x >= 6 else x + 24)
         df['Total_Piezas_Fabricadas'] = df['Buenas'] + df['Retrabajo'] + df['Observadas']
         df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
 
@@ -185,16 +172,19 @@ if len(rango_fechas) == 2:
             return pd.Series([total_piezas, total_horas, cantidad_productos, ciclos_maquina], 
                              index=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos', 'Ciclos_Maquina'])
 
-        despliegue_hora = df.groupby(['Fecha', 'Máquina', 'Hora_Real', 'Orden_Hora', 'Horas_Decimal']).apply(calcular_sub_bloque).reset_index()
-        despliegue_hora = despliegue_hora.dropna(subset=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
-        despliegue_hora['Pzs_Hora_Bloque'] = np.where(despliegue_hora['Total_Horas'] > 0, despliegue_hora['Total_Piezas'] / despliegue_hora['Total_Horas'], 0)
-        despliegue_hora['Ciclos_Hora_Bloque'] = np.where(despliegue_hora['Total_Horas'] > 0, despliegue_hora['Ciclos_Maquina'] / despliegue_hora['Total_Horas'], 0)
-        despliegue_hora = despliegue_hora[(despliegue_hora['Cantidad_Productos'] > 0) & (despliegue_hora['Total_Horas'] > 0) & (despliegue_hora['Pzs_Hora_Bloque'] > 0)]
+        # Agrupamos por Fecha (Día) en lugar de Hora
+        despliegue_dia = df.groupby(['Fecha', 'Máquina', 'Horas_Decimal']).apply(calcular_sub_bloque).reset_index()
+        despliegue_dia = despliegue_dia.dropna(subset=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
+        
+        despliegue_dia['Pzs_Hora_Promedio'] = np.where(despliegue_dia['Total_Horas'] > 0, despliegue_dia['Total_Piezas'] / despliegue_dia['Total_Horas'], 0)
+        despliegue_dia = despliegue_dia[(despliegue_dia['Cantidad_Productos'] > 0) & (despliegue_dia['Total_Horas'] > 0) & (despliegue_dia['Pzs_Hora_Promedio'] > 0)]
 
-        resumen_general = despliegue_hora.groupby(['Máquina', 'Cantidad_Productos']).agg(
-            Promedio_Pzs_Hora=('Pzs_Hora_Bloque', 'mean')
+        # 1. Rendimiento General
+        resumen_general = despliegue_dia.groupby(['Máquina', 'Cantidad_Productos']).agg(
+            Promedio_Pzs_Hora=('Pzs_Hora_Promedio', 'mean')
         ).reset_index().round(2)
 
+        # 2. Comparativo Real vs Estimado
         comp_prod = df.groupby(['Máquina', 'Código Producto']).agg(
             Suma_Piezas=('Total_Piezas_Fabricadas', 'sum'),
             Suma_Horas=('Horas_Decimal', 'sum'),
@@ -207,7 +197,8 @@ if len(rango_fechas) == 2:
         comp_prod['Diferencia'] = comp_prod['Real_Pzs_Hora'] - comp_prod['Estimado_Pzs_Hora']
         comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora', 'Diferencia']].round(2)
 
-        prom_h = despliegue_hora.groupby(['Máquina', 'Hora_Real', 'Orden_Hora']).agg(P=('Pzs_Hora_Bloque', 'mean')).reset_index().sort_values('Orden_Hora')
+        # 3. Tendencia Diaria para el gráfico
+        prom_d = despliegue_dia.groupby(['Máquina', 'Fecha']).agg(P=('Pzs_Hora_Promedio', 'mean')).reset_index().sort_values('Fecha')
 
     # ==========================================
     # 4. GENERACIÓN DEL PDF EJECUTIVO
@@ -279,7 +270,7 @@ if len(rango_fechas) == 2:
 
         # ---- SECCIÓN 3: Histórico Diario ----
         for m_id in maquinas_seleccionadas:
-            dat_pdf = prom_h[prom_h['Máquina'] == m_id]
+            dat_pdf = prom_d[prom_d['Máquina'] == m_id]
             if dat_pdf.empty: continue
 
             pdf.add_page()
@@ -289,20 +280,22 @@ if len(rango_fechas) == 2:
             pdf.set_font("Arial", "B", 10)
             pdf.set_fill_color(*AZUL_FONDO)
             pdf.cell(70, 8, "Maquina", 1, 0, 'C', True)
-            pdf.cell(50, 8, "Hora", 1, 0, 'C', True)
-            pdf.cell(70, 8, "Promedio (Pzs/h)", 1, 1, 'C', True)
+            pdf.cell(50, 8, "Fecha", 1, 0, 'C', True)
+            pdf.cell(70, 8, "Promedio Diario (Pzs/h)", 1, 1, 'C', True)
             
             pdf.set_font("Arial", "", 9)
             for _, r in dat_pdf.iterrows():
+                fecha_format = r['Fecha'].strftime('%d/%m/%Y')
                 pdf.cell(70, 7, str(r['Máquina'])[:30], 1, 0, 'C')
-                pdf.cell(50, 7, f"{r['Hora_Real']}:00", 1, 0, 'C')
+                pdf.cell(50, 7, fecha_format, 1, 0, 'C')
                 pdf.cell(70, 7, f"{r['P']:.2f}", 1, 1, 'C')
             
             fig_t, ax_t = plt.subplots(figsize=(10, 3.5))
-            ax_t.plot(dat_pdf['Hora_Real'].astype(str) + ":00", dat_pdf['P'], marker='o', color='#00509E')
-            ax_t.set_title(f"Tendencia - {m_id}")
+            ax_t.plot(dat_pdf['Fecha'].dt.strftime('%d/%m'), dat_pdf['P'], marker='o', color='#00509E')
+            ax_t.set_title(f"Tendencia Diaria - {m_id}")
             ax_t.set_ylabel("Promedio (Pzs/h)")
             ax_t.grid(True, linestyle='--', alpha=0.6)
+            plt.xticks(rotation=45)
             
             t_name = f"t_{m_id}.png".replace(" ","").replace("/","")
             fig_t.savefig(t_name, bbox_inches='tight')
