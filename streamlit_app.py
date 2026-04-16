@@ -45,7 +45,7 @@ MAQUINAS_MAP = {
 # FUNCIÓN DE LIMPIEZA DE TEXTO PARA PDF
 # ==========================================
 def clean_text(text):
-    """Limpia caracteres que FPDF no soporta (emojis, etc.)"""
+    """Limpia caracteres que FPDF no soporta para evitar UnicodeEncodeError"""
     if pd.isna(text): return "-"
     return str(text).encode('latin-1', 'replace').decode('latin-1')
 
@@ -187,18 +187,17 @@ if len(rango_fechas) == 2:
             Promedio_Pzs_Hora=('Pzs_Hora_Promedio', 'mean')
         ).reset_index().round(2)
 
+        # --- AQUI ESTÁ LA CORRECCIÓN: Usamos 'max' para ignorar los 0.000 ---
         comp_prod = df_calc.groupby(['Máquina', 'Código Producto']).agg(
             Suma_Piezas=('Total_Piezas_Fabricadas', 'sum'),
             Suma_Horas=('Horas_Decimal', 'sum'),
-            Tiempo_Ciclo_DB=('Tiempo Ciclo', 'mean')
+            Tiempo_Ciclo_DB=('Tiempo Ciclo', 'max') 
         ).reset_index().dropna()
 
         comp_prod = comp_prod[comp_prod['Suma_Horas'] > 0]
         comp_prod['Real_Pzs_Hora'] = comp_prod['Suma_Piezas'] / comp_prod['Suma_Horas']
         comp_prod['Estimado_Pzs_Hora'] = np.where(comp_prod['Tiempo_Ciclo_DB'] > 0, 60 / comp_prod['Tiempo_Ciclo_DB'], 0)
-        
-        # Eliminamos el TC DB para imprimir limpio en el PDF Ejecutivo
-        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora']].round(3)
+        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Tiempo_Ciclo_DB', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora']].round(3)
 
         prom_d = despliegue_dia[['Máquina', 'Fecha', 'Pzs_Hora_Promedio', 'Cantidad_Productos']].copy()
         prom_d.rename(columns={'Pzs_Hora_Promedio': 'P'}, inplace=True)
@@ -243,21 +242,23 @@ if len(rango_fechas) == 2:
 
         # ---- SECCIÓN 2: Rendimiento Real por Producto vs Estimado ----
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(190, 10, clean_text("2. Rendimiento por Producto (Real vs Estimado Ingenieria)"), 0, 1)
+        pdf.cell(190, 10, clean_text("2. Rendimiento por Producto (Validacion TC vs DB)"), 0, 1)
         
-        pdf.set_font("Arial", "B", 9)
+        pdf.set_font("Arial", "B", 8)
         pdf.set_fill_color(*AZUL_FONDO)
-        pdf.cell(50, 8, "Maquina", 1, 0, 'C', True)
-        pdf.cell(70, 8, "Codigo Producto", 1, 0, 'C', True)
-        pdf.cell(35, 8, "Real (Pzs/h)", 1, 0, 'C', True)
-        pdf.cell(35, 8, "Est. (Pzs/h)", 1, 1, 'C', True)
+        pdf.cell(45, 8, "Maquina", 1, 0, 'C', True)
+        pdf.cell(65, 8, "Codigo Producto", 1, 0, 'C', True)
+        pdf.cell(20, 8, "TC DB(min)", 1, 0, 'C', True)
+        pdf.cell(30, 8, "Real (Pzs/h)", 1, 0, 'C', True)
+        pdf.cell(30, 8, "Est. (Pzs/h)", 1, 1, 'C', True)
         
-        pdf.set_font("Arial", "", 9)
+        pdf.set_font("Arial", "", 8)
         for _, r in comp_prod.iterrows():
-            pdf.cell(50, 7, clean_text(r['Máquina'])[:22], 1)
-            pdf.cell(70, 7, clean_text(r['Código Producto'])[:35], 1)
-            pdf.cell(35, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
-            pdf.cell(35, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
+            pdf.cell(45, 7, clean_text(r['Máquina'])[:22], 1)
+            pdf.cell(65, 7, clean_text(r['Código Producto'])[:35], 1)
+            pdf.cell(20, 7, f"{r['Tiempo_Ciclo_DB']:.3f}", 1, 0, 'C')
+            pdf.cell(30, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
+            pdf.cell(30, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
         # ---- SECCIÓN 3: Histórico Diario ----
@@ -317,7 +318,7 @@ if len(rango_fechas) == 2:
         
         df_audit['TC_Anterior'] = df_audit.groupby(['Máquina', 'Código Producto'])['Tiempo Ciclo'].shift(1)
         
-        # Redondeamos a 3 decimales para evitar que pequeñas variaciones se marquen
+        # Redondeamos a 3 decimales para evitar alertas por milisegundos de diferencia
         df_audit['Hubo_Cambio'] = (df_audit['TC_Anterior'].notna()) & (df_audit['Tiempo Ciclo'].round(3) != df_audit['TC_Anterior'].round(3))
         
         df_imprimir = df_audit[df_audit['TC_Anterior'].isna() | df_audit['Hubo_Cambio']].copy()
