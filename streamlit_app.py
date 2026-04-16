@@ -49,18 +49,18 @@ st.set_page_config(page_title="Generador de Reportes de Producción", layout="ce
 st.title("📊 Generador de Reporte Ejecutivo (PDF)")
 
 # ==========================================
-# 1. FUNCIÓN DE EXTRACCIÓN SQL
+# 1. FUNCIÓN DE EXTRACCIÓN SQL INTELIGENTE
 # ==========================================
 @st.cache_data(ttl=300)
 def fetch_produccion_hora(fecha_ini, fecha_fin):
-    try:
-        # Conexión a la base de datos SQL
-        conn = st.connection("wii_bi", type="sql")
-        
-        ini_str = fecha_ini.strftime('%Y-%m-%d')
-        fin_str = fecha_fin.strftime('%Y-%m-%d')
+    conn = st.connection("wii_bi", type="sql")
+    ini_str = fecha_ini.strftime('%Y-%m-%d')
+    fin_str = fecha_fin.strftime('%Y-%m-%d')
 
-        # Consulta SQL: Ajusta p.Hour u otros campos según cómo estén en tu DB
+    # 👇 ¡AQUÍ ES DONDE CAMBIARÁS EL NOMBRE CUANDO EL DETECTIVE LO ENCUENTRE! 👇
+    TABLA_PRODUCCION = "PROD_H_01" 
+    
+    try:
         query = f"""
             SELECT 
                 p.Date as Fecha,
@@ -72,19 +72,36 @@ def fetch_produccion_hora(fecha_ini, fecha_fin):
                 p.ProductiveTime as [Tiempo Producción (Min)],
                 pr.CycleTime as [Tiempo Ciclo],
                 p.Hour as Hora
-            FROM PROD_H_01 p 
+            FROM {TABLA_PRODUCCION} p 
             JOIN CELL c ON p.CellId = c.CellId
             JOIN PRODUCT pr ON p.ProductId = pr.ProductId
             WHERE p.Date BETWEEN '{ini_str}' AND '{fin_str}'
         """
         df = conn.query(query)
-        return df
+        return df, None
+        
     except Exception as e:
-        st.error(f"Error conectando a la base de datos SQL: {e}")
-        return pd.DataFrame()
+        error_msg = str(e)
+        # Si el error es porque la tabla no existe (208 en SQL Server)
+        if "Invalid object name" in error_msg or "208" in error_msg:
+            try:
+                # El Detective busca en los metadatos de la BD
+                query_desc = """
+                    SELECT TABLE_NAME 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_NAME LIKE '%PROD%' 
+                       OR TABLE_NAME LIKE '%HOUR%'
+                       OR TABLE_NAME LIKE '%H_%'
+                """
+                df_tablas = conn.query(query_desc)
+                return df_tablas, "TABLA_NO_ENCONTRADA"
+            except Exception as e2:
+                return pd.DataFrame(), f"Error grave consultando el esquema: {e2}"
+        
+        return pd.DataFrame(), error_msg
 
 # ==========================================
-# 2. FILTROS (FECHA Y MÁQUINA MÚLTIPLE)
+# 2. FILTROS Y EJECUCIÓN
 # ==========================================
 st.markdown("### Configuración del Reporte")
 
@@ -98,38 +115,34 @@ rango_fechas = st.date_input(
 if len(rango_fechas) == 2:
     inicio, fin = rango_fechas
     
-    with st.spinner("Obteniendo datos de producción desde SQL Server..."):
-        df_raw = fetch_produccion_hora(inicio, fin)
+    with st.spinner("Conectando a SQL Server y obteniendo datos..."):
+        df_raw, status_error = fetch_produccion_hora(inicio, fin)
 
     # ==========================================
-    # 🕵️ MODO DETECTIVE: INSPECCIÓN DE DATOS
+    # 🕵️ LÓGICA DEL DETECTIVE
     # ==========================================
-    with st.expander("🕵️ Modo Detective: Inspección de Datos Crudos (SQL)", expanded=False):
-        if df_raw.empty:
-            st.error("🚨 La base de datos no devolvió ningún registro para este rango de fechas.")
-            st.info("💡 Posibles causas: \n"
-                    "1. No hay producción cargada en esas fechas.\n"
-                    "2. El nombre de la tabla o vista en la consulta SQL es incorrecto.\n"
-                    "3. El formato de las fechas en el WHERE no coincide con SQL.")
-        else:
-            st.success(f"✅ Se obtuvieron {len(df_raw)} filas y {len(df_raw.columns)} columnas.")
-            
-            # Mostrar nombres de columnas y tipos de datos
-            st.write("**1. Columnas detectadas y tipos de datos:**")
-            df_tipos = pd.DataFrame(df_raw.dtypes, columns=['Tipo de Dato']).reset_index()
-            df_tipos = df_tipos.rename(columns={'index': 'Nombre Columna'})
-            st.dataframe(df_tipos, use_container_width=True)
-            
-            # Mostrar tabla cruda
-            st.write("**2. Muestra de los datos en crudo (primeras 100 filas):**")
-            st.dataframe(df_raw.head(100), use_container_width=True)
-    # ==========================================
-
-    if df_raw.empty:
-        st.warning("No se puede continuar. Por favor ajusta la consulta o las fechas.")
+    if status_error == "TABLA_NO_ENCONTRADA":
+        st.error("🚨 La tabla configurada no existe en la base de datos.")
+        st.info("El Modo Detective ha escaneado la base de datos y ha encontrado estas tablas relacionadas. "
+                "Busca la que contenga el detalle por hora (ej. `PROD_HOUR_01`, `PROD_H_03`, etc.):")
+        st.dataframe(df_raw, use_container_width=True)
+        st.warning("👉 Cuando sepas el nombre correcto, actualiza la variable `TABLA_PRODUCCION` en el código (línea 61) y vuelve a ejecutar.")
+        st.stop()
+    elif status_error:
+        st.error(f"❌ Error de SQL Server: {status_error}")
         st.stop()
 
-    # Pre-procesamiento
+    if df_raw.empty:
+        st.warning("La consulta fue exitosa pero no hay datos de producción para estas fechas.")
+        st.stop()
+
+    with st.expander("🕵️ Inspeccionar Datos Crudos (Si quieres revisar columnas)", expanded=False):
+        st.success(f"✅ Se obtuvieron {len(df_raw)} filas de la base de datos.")
+        st.write("Columnas y tipos de datos:")
+        st.dataframe(pd.DataFrame(df_raw.dtypes, columns=['Tipo']).reset_index().rename(columns={'index':'Columna'}), use_container_width=True)
+        st.dataframe(df_raw.head(50), use_container_width=True)
+
+    # Pre-procesamiento de datos extraídos
     df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], errors='coerce')
     df_raw = df_raw.dropna(subset=['Fecha', 'Máquina'])
     
@@ -152,14 +165,13 @@ if len(rango_fechas) == 2:
         st.stop()
 
     df = df_raw[df_raw['Máquina'].isin(maquinas_seleccionadas)].copy()
-
-    st.success(f"Datos listos para procesar ({len(df)} registros encontrados).")
+    st.success(f"Datos listos para procesar ({len(df)} registros validados).")
     st.divider()
 
     # ==========================================
-    # 3. CÁLCULOS BASE (Ocultos)
+    # 3. CÁLCULOS BASE
     # ==========================================
-    with st.spinner("Procesando datos y calculando métricas..."):
+    with st.spinner("Calculando métricas y cadencias..."):
         columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo', 'Hora']
         for col in columnas_num:
             if col in df.columns:
@@ -171,7 +183,6 @@ if len(rango_fechas) == 2:
         df['Total_Piezas_Fabricadas'] = df['Buenas'] + df['Retrabajo'] + df['Observadas']
         df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
 
-        # --- CÁLCULOS DE RENDIMIENTO ---
         def calcular_sub_bloque(g):
             if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
             total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
@@ -262,7 +273,6 @@ if len(rango_fechas) == 2:
             pdf.cell(25, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
             pdf.cell(25, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 0, 'C')
             
-            # Color en Diferencia
             if r['Diferencia'] > 0:
                 pdf.set_text_color(0, 150, 0)
                 diff_text = f"+{r['Diferencia']:.2f}"
@@ -283,7 +293,6 @@ if len(rango_fechas) == 2:
             pdf.set_font("Arial", "B", 12)
             pdf.cell(190, 10, f"3. Rendimiento Historico Diario: {m_id}", 0, 1)
             
-            # Tabla del histórico
             pdf.set_font("Arial", "B", 10)
             pdf.set_fill_color(*AZUL_FONDO)
             pdf.cell(70, 8, "Maquina", 1, 0, 'C', True)
@@ -296,7 +305,6 @@ if len(rango_fechas) == 2:
                 pdf.cell(50, 7, f"{r['Hora_Real']}:00", 1, 0, 'C')
                 pdf.cell(70, 7, f"{r['P']:.2f}", 1, 1, 'C')
             
-            # Gráfico temporal
             fig_t, ax_t = plt.subplots(figsize=(10, 3.5))
             ax_t.plot(dat_pdf['Hora_Real'].astype(str) + ":00", dat_pdf['P'], marker='o', color='#00509E')
             ax_t.set_title(f"Tendencia - {m_id}")
