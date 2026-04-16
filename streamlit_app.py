@@ -42,6 +42,14 @@ MAQUINAS_MAP = {
 }
 
 # ==========================================
+# FUNCIÓN DE LIMPIEZA DE TEXTO PARA PDF
+# ==========================================
+def clean_text(text):
+    """Limpia caracteres que FPDF no soporta (emojis, etc.)"""
+    if pd.isna(text): return "-"
+    return str(text).encode('latin-1', 'replace').decode('latin-1')
+
+# ==========================================
 # CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(page_title="Generador de Reportes de Producción", layout="centered", page_icon="📊")
@@ -205,18 +213,18 @@ if len(rango_fechas) == 2:
         pdf.add_page()
         pdf.set_font("Arial", "B", 18)
         pdf.set_text_color(*AZUL_TITULO)
-        pdf.cell(190, 10, "REPORTE DE PRODUCCION EJECUTIVO", 0, 1, 'C')
+        pdf.cell(190, 10, clean_text("REPORTE DE PRODUCCION EJECUTIVO"), 0, 1, 'C')
         
         pdf.set_font("Arial", "I", 11)
         pdf.set_text_color(100, 100, 100)
         texto_maquinas = "Multiples Seleccionadas" if len(maquinas_seleccionadas) > 1 else maquinas_seleccionadas[0]
-        pdf.cell(190, 8, f"Periodo: {inicio} al {fin} | Maquina(s): {texto_maquinas}", 0, 1, 'C')
+        pdf.cell(190, 8, clean_text(f"Periodo: {inicio} al {fin} | Maquina(s): {texto_maquinas}"), 0, 1, 'C')
         pdf.ln(5)
 
         # ---- SECCIÓN 1: Rendimiento General ----
         pdf.set_font("Arial", "B", 12)
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(190, 10, "1. Rendimiento General (Por Cantidad de Productos)", 0, 1)
+        pdf.cell(190, 10, clean_text("1. Rendimiento General (Por Cantidad de Productos)"), 0, 1)
         
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(*AZUL_FONDO)
@@ -226,14 +234,14 @@ if len(rango_fechas) == 2:
         
         pdf.set_font("Arial", "", 9)
         for _, r in resumen_general.iterrows():
-            pdf.cell(80, 7, str(r['Máquina'])[:35], 1)
+            pdf.cell(80, 7, clean_text(r['Máquina'])[:35], 1)
             pdf.cell(50, 7, str(int(r['Cantidad_Productos'])), 1, 0, 'C')
             pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
         # ---- SECCIÓN 2: Rendimiento Real por Producto ----
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(190, 10, "2. Rendimiento por Producto (Validacion TC vs DB)", 0, 1)
+        pdf.cell(190, 10, clean_text("2. Rendimiento por Producto (Validacion TC vs DB)"), 0, 1)
         
         pdf.set_font("Arial", "B", 8)
         pdf.set_fill_color(*AZUL_FONDO)
@@ -245,8 +253,8 @@ if len(rango_fechas) == 2:
         
         pdf.set_font("Arial", "", 8)
         for _, r in comp_prod.iterrows():
-            pdf.cell(45, 7, str(r['Máquina'])[:22], 1)
-            pdf.cell(65, 7, str(r['Código Producto'])[:35], 1)
+            pdf.cell(45, 7, clean_text(r['Máquina'])[:22], 1)
+            pdf.cell(65, 7, clean_text(r['Código Producto'])[:35], 1)
             pdf.cell(20, 7, f"{r['Tiempo_Ciclo_DB']:.3f}", 1, 0, 'C')
             pdf.cell(30, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
             pdf.cell(30, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
@@ -259,7 +267,7 @@ if len(rango_fechas) == 2:
 
             pdf.add_page()
             pdf.set_font("Arial", "B", 12)
-            pdf.cell(190, 10, f"3. Rendimiento Historico Diario: {m_id}", 0, 1)
+            pdf.cell(190, 10, clean_text(f"3. Rendimiento Historico Diario: {m_id}"), 0, 1)
             
             pdf.set_font("Arial", "B", 10)
             pdf.set_fill_color(*AZUL_FONDO)
@@ -271,14 +279,14 @@ if len(rango_fechas) == 2:
             pdf.set_font("Arial", "", 9)
             for _, r in dat_pdf.iterrows():
                 fecha_format = r['Fecha'].strftime('%d/%m/%Y')
-                pdf.cell(60, 7, str(r['Máquina'])[:28], 1, 0, 'C')
+                pdf.cell(60, 7, clean_text(r['Máquina'])[:28], 1, 0, 'C')
                 pdf.cell(40, 7, fecha_format, 1, 0, 'C')
                 pdf.cell(40, 7, str(int(r['Cantidad_Productos'])), 1, 0, 'C')
                 pdf.cell(50, 7, f"{r['P']:.2f}", 1, 1, 'C')
             
             fig_t, ax_t = plt.subplots(figsize=(10, 3.5))
             ax_t.plot(dat_pdf['Fecha'].dt.strftime('%d/%m'), dat_pdf['P'], marker='o', color='#00509E')
-            ax_t.set_title(f"Tendencia Diaria - {m_id}")
+            ax_t.set_title(clean_text(f"Tendencia Diaria - {m_id}"))
             ax_t.set_ylabel("Promedio (Pzs/h)")
             ax_t.grid(True, linestyle='--', alpha=0.6)
             plt.xticks(rotation=45)
@@ -301,16 +309,13 @@ if len(rango_fechas) == 2:
     # 5. GENERACIÓN DE PDF - AUDITORÍA DE TC
     # ==========================================
     def generar_pdf_auditoria(df_base):
-        # Filtramos y preparamos datos
         df_audit = df_base[['Fecha', 'Máquina', 'Código Producto', 'Tiempo Ciclo']].copy()
         df_audit = df_audit.dropna(subset=['Tiempo Ciclo'])
         df_audit = df_audit.sort_values(by=['Máquina', 'Código Producto', 'Fecha'])
         
-        # Calcular variación
         df_audit['TC_Anterior'] = df_audit.groupby(['Máquina', 'Código Producto'])['Tiempo Ciclo'].shift(1)
         df_audit['Hubo_Cambio'] = (df_audit['TC_Anterior'].notna()) & (df_audit['Tiempo Ciclo'] != df_audit['TC_Anterior'])
         
-        # Dejamos solo el registro inicial de cada pieza y los días donde hubo cambios
         df_imprimir = df_audit[df_audit['TC_Anterior'].isna() | df_audit['Hubo_Cambio']].copy()
 
         pdf = FPDF(orientation='L')
@@ -321,11 +326,11 @@ if len(rango_fechas) == 2:
         pdf.add_page()
         pdf.set_font("Arial", "B", 16)
         pdf.set_text_color(*AZUL_TITULO)
-        pdf.cell(277, 10, "REPORTE DE AUDITORIA: VARIACIONES EN TIEMPO DE CICLO", 0, 1, 'C')
+        pdf.cell(277, 10, clean_text("REPORTE DE AUDITORIA: VARIACIONES EN TIEMPO DE CICLO"), 0, 1, 'C')
         
         pdf.set_font("Arial", "I", 10)
         pdf.set_text_color(100, 100, 100)
-        pdf.cell(277, 6, f"Periodo: {inicio.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}", 0, 1, 'C')
+        pdf.cell(277, 6, clean_text(f"Periodo: {inicio.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}"), 0, 1, 'C')
         pdf.ln(5)
 
         pdf.set_font("Arial", "B", 9)
@@ -358,7 +363,8 @@ if len(rango_fechas) == 2:
             if es_alerta:
                 pdf.set_fill_color(*ROJO_ALERTA)
                 pdf.set_font("Arial", "B", 8)
-                estado = "⚠️ CAMBIO DETECTADO"
+                # Se eliminó el emoji para evitar el UnicodeEncodeError
+                estado = "CAMBIO DETECTADO" 
             else:
                 pdf.set_fill_color(255, 255, 255)
                 pdf.set_font("Arial", "", 8)
@@ -369,8 +375,8 @@ if len(rango_fechas) == 2:
             fecha_str = row['Fecha'].strftime('%d/%m/%Y')
 
             pdf.cell(35, 7, fecha_str, 1, 0, 'C', fill=es_alerta)
-            pdf.cell(50, 7, str(row['Máquina'])[:25], 1, 0, 'L', fill=es_alerta)
-            pdf.cell(80, 7, str(row['Código Producto'])[:45], 1, 0, 'L', fill=es_alerta)
+            pdf.cell(50, 7, clean_text(row['Máquina'])[:25], 1, 0, 'L', fill=es_alerta)
+            pdf.cell(80, 7, clean_text(row['Código Producto'])[:45], 1, 0, 'L', fill=es_alerta)
             pdf.cell(35, 7, tc_ant, 1, 0, 'C', fill=es_alerta)
             pdf.cell(35, 7, tc_act, 1, 0, 'C', fill=es_alerta)
             pdf.cell(42, 7, estado, 1, 1, 'C', fill=es_alerta)
@@ -412,7 +418,6 @@ if len(rango_fechas) == 2:
                 type="secondary"
             )
 
-    # Limpieza de archivos temporales
     if os.path.exists(file_ejecutivo): os.remove(file_ejecutivo)
     if os.path.exists(file_auditoria): os.remove(file_auditoria)
 
