@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import tempfile
 from fpdf import FPDF
 from datetime import datetime
 
@@ -150,7 +151,7 @@ if len(rango_fechas) == 2:
     st.divider()
 
     # ==========================================
-    # 3. CÁLCULOS BASE (ADAPTADO A DÍAS Y SIN ESTIMADO)
+    # 3. CÁLCULOS BASE
     # ==========================================
     with st.spinner("Calculando métricas y cadencias diarias..."):
         columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)']
@@ -158,7 +159,6 @@ if len(rango_fechas) == 2:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # Agregamos .copy() para evitar SettingWithCopyWarning
         df = df[df['Tiempo Producción (Min)'] > 0].copy()
         df['Total_Piezas_Fabricadas'] = df['Buenas'] + df['Retrabajo'] + df['Observadas']
         df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
@@ -167,25 +167,21 @@ if len(rango_fechas) == 2:
             if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
             total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
             cantidad_productos = int(g['Código Producto'].nunique())
-            # Tomamos Horas_Decimal directo de la columna
             total_horas = float(g['Horas_Decimal'].iloc[0]) if not g.empty else 0.0
             ciclos_maquina = total_piezas / cantidad_productos if cantidad_productos > 0 else 0.0
             return pd.Series([total_piezas, total_horas, cantidad_productos, ciclos_maquina], 
                              index=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos', 'Ciclos_Maquina'])
 
-        # AGRUPAMOS SOLO POR FECHA Y MÁQUINA (Esto evita el KeyError)
         despliegue_dia = df.groupby(['Fecha', 'Máquina']).apply(calcular_sub_bloque).reset_index()
         despliegue_dia = despliegue_dia.dropna(subset=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
         
         despliegue_dia['Pzs_Hora_Promedio'] = np.where(despliegue_dia['Total_Horas'] > 0, despliegue_dia['Total_Piezas'] / despliegue_dia['Total_Horas'], 0)
         despliegue_dia = despliegue_dia[(despliegue_dia['Cantidad_Productos'] > 0) & (despliegue_dia['Total_Horas'] > 0) & (despliegue_dia['Pzs_Hora_Promedio'] > 0)]
 
-        # 1. Rendimiento General
         resumen_general = despliegue_dia.groupby(['Máquina', 'Cantidad_Productos']).agg(
             Promedio_Pzs_Hora=('Pzs_Hora_Promedio', 'mean')
         ).reset_index().round(2)
 
-        # 2. Rendimiento Real por Producto
         comp_prod = df.groupby(['Máquina', 'Código Producto']).agg(
             Suma_Piezas=('Total_Piezas_Fabricadas', 'sum'),
             Suma_Horas=('Horas_Decimal', 'sum')
@@ -195,7 +191,6 @@ if len(rango_fechas) == 2:
         comp_prod['Real_Pzs_Hora'] = comp_prod['Suma_Piezas'] / comp_prod['Suma_Horas']
         comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora']].round(2)
 
-        # 3. Tendencia Diaria para el gráfico
         prom_d = despliegue_dia.groupby(['Máquina', 'Fecha']).agg(P=('Pzs_Hora_Promedio', 'mean')).reset_index().sort_values('Fecha')
 
     # ==========================================
@@ -282,24 +277,29 @@ if len(rango_fechas) == 2:
             ax_t.grid(True, linestyle='--', alpha=0.6)
             plt.xticks(rotation=45)
             
-            t_name = f"t_{m_id}.png".replace(" ","").replace("/","")
-            fig_t.savefig(t_name, bbox_inches='tight')
+            # --- USO DE TEMPFILE PARA EVITAR ERRORES DE GUARDADO ---
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+                fig_t.savefig(tmp_img.name, bbox_inches='tight')
+                t_name = tmp_img.name
             plt.close(fig_t)
             
             pdf.ln(5)
             pdf.image(t_name, x=15, w=180)
+            
+            # Limpieza del archivo temporal
             if os.path.exists(t_name):
                 os.remove(t_name)
 
         # ==========================================
-        # DESCARGA DEL ARCHIVO
+        # DESCARGA DEL ARCHIVO FINAL
         # ==========================================
         fecha_str = f"{inicio.strftime('%d%m%y')}_al_{fin.strftime('%d%m%y')}"
         
+        # Limpiamos caracteres raros para el nombre del PDF
         if len(maquinas_seleccionadas) > 1:
             nombre_archivo = f"Reporte_Produccion_Multi_{fecha_str}.pdf"
         else:
-            nombre_limpio = maquinas_seleccionadas[0].replace(' ', '_')
+            nombre_limpio = ''.join(e for e in maquinas_seleccionadas[0] if e.isalnum())
             nombre_archivo = f"Reporte_Produccion_{nombre_limpio}_{fecha_str}.pdf"
             
         pdf.output(nombre_archivo)
