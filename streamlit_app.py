@@ -49,56 +49,97 @@ st.set_page_config(page_title="Generador de Reportes de Producción", layout="ce
 st.title("📊 Generador de Reporte Ejecutivo (PDF)")
 
 # ==========================================
-# 1. FUENTE DE DATOS FIJA (FUMISCOR)
+# 1. FUNCIÓN DE EXTRACCIÓN SQL
 # ==========================================
-SHEET_ID = "1wegxZJDFb4_cawUN8cz0RS9oStUFCeg94w72LUHzGsw"
-GID = "315437448"
-url_csv = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
+@st.cache_data(ttl=300)
+def fetch_produccion_hora(fecha_ini, fecha_fin):
+    try:
+        # Conexión a la base de datos SQL
+        conn = st.connection("wii_bi", type="sql")
+        
+        ini_str = fecha_ini.strftime('%Y-%m-%d')
+        fin_str = fecha_fin.strftime('%Y-%m-%d')
 
-@st.cache_data(ttl=600)
-def cargar_datos(url):
-    return pd.read_csv(url)
+        # Consulta SQL: Ajusta p.Hour u otros campos según cómo estén en tu DB
+        query = f"""
+            SELECT 
+                p.Date as Fecha,
+                c.Name as Máquina,
+                pr.Code as [Código Producto],
+                p.Good as Buenas,
+                p.Rework as Retrabajo,
+                p.Scrap as Observadas,
+                p.ProductiveTime as [Tiempo Producción (Min)],
+                pr.CycleTime as [Tiempo Ciclo],
+                p.Hour as Hora
+            FROM PROD_H_01 p 
+            JOIN CELL c ON p.CellId = c.CellId
+            JOIN PRODUCT pr ON p.ProductId = pr.ProductId
+            WHERE p.Date BETWEEN '{ini_str}' AND '{fin_str}'
+        """
+        df = conn.query(query)
+        return df
+    except Exception as e:
+        st.error(f"Error conectando a la base de datos SQL: {e}")
+        return pd.DataFrame()
 
-try:
-    st.info("Obteniendo datos de producción de Fumiscor desde Google Sheets...")
-    df_raw = cargar_datos(url_csv)
+# ==========================================
+# 2. FILTROS (FECHA Y MÁQUINA MÚLTIPLE)
+# ==========================================
+st.markdown("### Configuración del Reporte")
+
+today = pd.to_datetime("today").date()
+rango_fechas = st.date_input(
+    "📅 1. Selecciona el rango de fechas:",
+    value=(today - pd.Timedelta(days=7), today),
+    max_value=today
+)
+
+if len(rango_fechas) == 2:
+    inicio, fin = rango_fechas
     
-    # Pre-procesamiento de fechas (dayfirst=True para formato Latino)
-    df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], dayfirst=True, errors='coerce')
-    df_raw = df_raw.dropna(subset=['Fecha'])
+    with st.spinner("Obteniendo datos de producción desde SQL Server..."):
+        df_raw = fetch_produccion_hora(inicio, fin)
 
     # ==========================================
-    # 2. FILTROS (FECHA Y MÁQUINA MÚLTIPLE)
+    # 🕵️ MODO DETECTIVE: INSPECCIÓN DE DATOS
     # ==========================================
-    st.markdown("### Configuración del Reporte")
-    
-    fecha_min = df_raw['Fecha'].min().date()
-    fecha_max = df_raw['Fecha'].max().date()
-    
-    rango_fechas = st.date_input(
-        "📅 1. Selecciona el rango de fechas:",
-        value=(fecha_min, fecha_max),
-        min_value=fecha_min,
-        max_value=fecha_max
-    )
+    with st.expander("🕵️ Modo Detective: Inspección de Datos Crudos (SQL)", expanded=False):
+        if df_raw.empty:
+            st.error("🚨 La base de datos no devolvió ningún registro para este rango de fechas.")
+            st.info("💡 Posibles causas: \n"
+                    "1. No hay producción cargada en esas fechas.\n"
+                    "2. El nombre de la tabla o vista en la consulta SQL es incorrecto.\n"
+                    "3. El formato de las fechas en el WHERE no coincide con SQL.")
+        else:
+            st.success(f"✅ Se obtuvieron {len(df_raw)} filas y {len(df_raw.columns)} columnas.")
+            
+            # Mostrar nombres de columnas y tipos de datos
+            st.write("**1. Columnas detectadas y tipos de datos:**")
+            df_tipos = pd.DataFrame(df_raw.dtypes, columns=['Tipo de Dato']).reset_index()
+            df_tipos = df_tipos.rename(columns={'index': 'Nombre Columna'})
+            st.dataframe(df_tipos, use_container_width=True)
+            
+            # Mostrar tabla cruda
+            st.write("**2. Muestra de los datos en crudo (primeras 100 filas):**")
+            st.dataframe(df_raw.head(100), use_container_width=True)
+    # ==========================================
 
-    if len(rango_fechas) == 2:
-        inicio, fin = rango_fechas
-        mask = (df_raw['Fecha'].dt.date >= inicio) & (df_raw['Fecha'].dt.date <= fin)
-        df_filtrado_fecha = df_raw.loc[mask].copy()
-    else:
-        st.warning("Por favor, selecciona un rango de fechas completo (Inicio y Fin).")
+    if df_raw.empty:
+        st.warning("No se puede continuar. Por favor ajusta la consulta o las fechas.")
         st.stop()
 
-    # --- LIMPIEZA Y FILTRADO ESTRICTO DE MÁQUINAS (SOLO FUMISCOR) ---
-    df_filtrado_fecha = df_filtrado_fecha.dropna(subset=['Máquina'])
+    # Pre-procesamiento
+    df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], errors='coerce')
+    df_raw = df_raw.dropna(subset=['Fecha', 'Máquina'])
     
+    # Limpieza de Nombres de Máquinas
     mapa_limpio = {str(k).strip().upper(): k for k in MAQUINAS_MAP.keys()}
-    df_filtrado_fecha['Máquina_Upper'] = df_filtrado_fecha['Máquina'].astype(str).str.strip().str.upper()
-    df_filtrado_fecha = df_filtrado_fecha[df_filtrado_fecha['Máquina_Upper'].isin(mapa_limpio.keys())].copy()
-    df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina_Upper'].map(mapa_limpio)
+    df_raw['Máquina_Upper'] = df_raw['Máquina'].astype(str).str.strip().str.upper()
+    df_raw = df_raw[df_raw['Máquina_Upper'].isin(mapa_limpio.keys())].copy()
+    df_raw['Máquina'] = df_raw['Máquina_Upper'].map(mapa_limpio)
 
-    lista_maquinas = sorted(df_filtrado_fecha['Máquina'].unique().tolist())
+    lista_maquinas = sorted(df_raw['Máquina'].unique().tolist())
     
     maquinas_seleccionadas = st.multiselect(
         "⚙️ 2. Selecciona la(s) Máquina(s) a incluir en el PDF:", 
@@ -110,9 +151,9 @@ try:
         st.warning("Por favor, selecciona al menos una máquina para generar el reporte.")
         st.stop()
 
-    df = df_filtrado_fecha[df_filtrado_fecha['Máquina'].isin(maquinas_seleccionadas)].copy()
+    df = df_raw[df_raw['Máquina'].isin(maquinas_seleccionadas)].copy()
 
-    st.success(f"Datos listos para procesar ({len(df)} registros encontrados para Fumiscor).")
+    st.success(f"Datos listos para procesar ({len(df)} registros encontrados).")
     st.divider()
 
     # ==========================================
@@ -122,7 +163,6 @@ try:
         columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo', 'Hora']
         for col in columnas_num:
             if col in df.columns:
-                df[col] = df[col].astype(str).str.replace(',', '.', regex=False)
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
         df = df[df['Tiempo Producción (Min)'] > 0]
@@ -273,9 +313,8 @@ try:
                 os.remove(t_name)
 
         # ==========================================
-        # DESCARGA DEL ARCHIVO (CON FECHAS DINÁMICAS)
+        # DESCARGA DEL ARCHIVO
         # ==========================================
-        # Formateamos las fechas de YYYY-MM-DD a un string limpio
         fecha_str = f"{inicio.strftime('%d%m%y')}_al_{fin.strftime('%d%m%y')}"
         
         if len(maquinas_seleccionadas) > 1:
@@ -286,7 +325,6 @@ try:
             
         pdf.output(nombre_archivo)
 
-    # Botón gigante y claro para la descarga final
     with open(nombre_archivo, "rb") as f:
         st.download_button(
             label="📥 Descargar Reporte Ejecutivo en PDF", 
@@ -299,5 +337,5 @@ try:
     if os.path.exists(nombre_archivo):
         os.remove(nombre_archivo)
 
-except Exception as e:
-    st.error(f"Error de procesamiento: {e}")
+else:
+    st.warning("Por favor, selecciona un rango de fechas completo (Inicio y Fin).")
