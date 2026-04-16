@@ -48,7 +48,7 @@ st.set_page_config(page_title="Generador de Reportes de Producción", layout="ce
 st.title("📊 Generador de Reporte Ejecutivo (PDF)")
 
 # ==========================================
-# 1. FUNCIÓN DE EXTRACCIÓN SQL (DIARIA)
+# 1. FUNCIÓN DE EXTRACCIÓN SQL
 # ==========================================
 @st.cache_data(ttl=300)
 def fetch_produccion_diaria(fecha_ini, fecha_fin):
@@ -57,7 +57,6 @@ def fetch_produccion_diaria(fecha_ini, fecha_fin):
     fin_str = fecha_fin.strftime('%Y-%m-%d')
 
     try:
-        # 1. Piezas por Día (Incluyendo Tiempo Ciclo desde PROD_D_01)
         query_piezas = f"""
             SELECT 
                 p.Date as Fecha,
@@ -75,7 +74,6 @@ def fetch_produccion_diaria(fecha_ini, fecha_fin):
         """
         df_pzs = conn.query(query_piezas)
 
-        # 2. Tiempo Productivo por Día
         query_tiempos = f"""
             SELECT 
                 p.Date as Fecha,
@@ -91,19 +89,13 @@ def fetch_produccion_diaria(fecha_ini, fecha_fin):
         if df_pzs.empty:
             return pd.DataFrame(), None
 
-        # 3. Cruzamos ambas tablas
         df_merged = pd.merge(df_pzs, df_times, on=['Fecha', 'Máquina'], how='left')
         df_merged['Tiempo Producción (Min)'] = df_merged['Tiempo Producción (Min)'].fillna(0)
         
         return df_merged, None
         
     except Exception as e:
-        # En caso de error, intentamos obtener el esquema para el modo detective
-        try:
-            df_descubrimiento = conn.query("SELECT TOP 5 * FROM PROD_D_01")
-            return df_descubrimiento, f"Error SQL (Probablemente 'CycleTime' se llama diferente). Revisa las columnas en el Detective. Error Original: {e}"
-        except:
-            return pd.DataFrame(), str(e)
+        return pd.DataFrame(), str(e)
 
 # ==========================================
 # 2. FILTROS Y EJECUCIÓN
@@ -120,22 +112,18 @@ rango_fechas = st.date_input(
 if len(rango_fechas) == 2:
     inicio, fin = rango_fechas
     
-    with st.spinner("Conectando a SQL Server (Extrayendo Producción Diaria)..."):
+    with st.spinner("Conectando a SQL Server..."):
         df_raw, status_error = fetch_produccion_diaria(inicio, fin)
 
     if status_error:
         st.error(f"❌ Error de SQL Server: {status_error}")
-        with st.expander("🕵️ Inspeccionar Columnas de PROD_D_01 (Modo Detective)", expanded=True):
-            if not df_raw.empty:
-                st.write("Busca cómo se llama realmente 'Tiempo Ciclo' en estas columnas:")
-                st.dataframe(pd.DataFrame(df_raw.dtypes, columns=['Tipo']).reset_index().rename(columns={'index':'Columna'}))
         st.stop()
 
     if df_raw.empty:
         st.warning("No hay datos de producción para estas fechas.")
         st.stop()
 
-    # Pre-procesamiento de fechas y máquinas
+    # Pre-procesamiento
     df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], errors='coerce')
     df_raw = df_raw.dropna(subset=['Fecha', 'Máquina'])
     
@@ -163,7 +151,7 @@ if len(rango_fechas) == 2:
     # ==========================================
     # 3. CÁLCULOS BASE
     # ==========================================
-    with st.spinner("Calculando métricas y cadencias diarias..."):
+    with st.spinner("Calculando métricas..."):
         columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo']
         for col in columnas_num:
             if col in df.columns:
@@ -174,13 +162,12 @@ if len(rango_fechas) == 2:
         df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
 
         def calcular_sub_bloque(g):
-            if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
+            if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0})
             total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
             cantidad_productos = int(g['Código Producto'].nunique())
             total_horas = float(g['Horas_Decimal'].iloc[0]) if not g.empty else 0.0
-            ciclos_maquina = total_piezas / cantidad_productos if cantidad_productos > 0 else 0.0
-            return pd.Series([total_piezas, total_horas, cantidad_productos, ciclos_maquina], 
-                             index=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos', 'Ciclos_Maquina'])
+            return pd.Series([total_piezas, total_horas, cantidad_productos], 
+                             index=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
 
         despliegue_dia = df.groupby(['Fecha', 'Máquina']).apply(calcular_sub_bloque).reset_index()
         despliegue_dia = despliegue_dia.dropna(subset=['Total_Piezas', 'Total_Horas', 'Cantidad_Productos'])
@@ -192,21 +179,24 @@ if len(rango_fechas) == 2:
             Promedio_Pzs_Hora=('Pzs_Hora_Promedio', 'mean')
         ).reset_index().round(2)
 
-        # Cálculo de Producción Real vs Estimada por Producto
+        # SECCIÓN 2: Real vs Estimado con TC de validación
         comp_prod = df.groupby(['Máquina', 'Código Producto']).agg(
             Suma_Piezas=('Total_Piezas_Fabricadas', 'sum'),
             Suma_Horas=('Horas_Decimal', 'sum'),
-            Tiempo_Ciclo_Prom=('Tiempo Ciclo', 'mean')
+            Tiempo_Ciclo_DB=('Tiempo Ciclo', 'mean')
         ).reset_index().dropna()
 
         comp_prod = comp_prod[comp_prod['Suma_Horas'] > 0]
         comp_prod['Real_Pzs_Hora'] = comp_prod['Suma_Piezas'] / comp_prod['Suma_Horas']
-        # Fórmula: 60 / Tiempo Ciclo = Estimado de Piezas por Hora
-        comp_prod['Estimado_Pzs_Hora'] = np.where(comp_prod['Tiempo_Ciclo_Prom'] > 0, 60 / comp_prod['Tiempo_Ciclo_Prom'], 0)
         
-        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora']].round(2)
+        # El estimado se calcula sobre el TC que trae la base de datos (Fórmula en minutos)
+        comp_prod['Estimado_Pzs_Hora'] = np.where(comp_prod['Tiempo_Ciclo_DB'] > 0, 60 / comp_prod['Tiempo_Ciclo_DB'], 0)
+        
+        comp_prod = comp_prod[['Máquina', 'Código Producto', 'Tiempo_Ciclo_DB', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora']].round(3)
 
-        prom_d = despliegue_dia.groupby(['Máquina', 'Fecha']).agg(P=('Pzs_Hora_Promedio', 'mean')).reset_index().sort_values('Fecha')
+        prom_d = despliegue_dia[['Máquina', 'Fecha', 'Pzs_Hora_Promedio', 'Cantidad_Productos']].copy()
+        prom_d.rename(columns={'Pzs_Hora_Promedio': 'P'}, inplace=True)
+        prom_d = prom_d.sort_values('Fecha')
 
     # ==========================================
     # 4. GENERACIÓN DEL PDF EJECUTIVO
@@ -246,26 +236,28 @@ if len(rango_fechas) == 2:
             pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 2: Rendimiento Real por Producto vs Estimado ----
+        # ---- SECCIÓN 2: Rendimiento Real por Producto con TC de la DB ----
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(190, 10, "2. Rendimiento por Producto (Real vs Estimado Ingenieria)", 0, 1)
+        pdf.cell(190, 10, "2. Rendimiento por Producto (Validacion TC vs DB)", 0, 1)
         
-        pdf.set_font("Arial", "B", 9)
+        pdf.set_font("Arial", "B", 8)
         pdf.set_fill_color(*AZUL_FONDO)
-        pdf.cell(50, 8, "Maquina", 1, 0, 'C', True)
-        pdf.cell(70, 8, "Codigo Producto", 1, 0, 'C', True)
-        pdf.cell(35, 8, "Real (Pzs/h)", 1, 0, 'C', True)
-        pdf.cell(35, 8, "Estimado (Pzs/h)", 1, 1, 'C', True)
+        pdf.cell(45, 8, "Maquina", 1, 0, 'C', True)
+        pdf.cell(65, 8, "Codigo Producto", 1, 0, 'C', True)
+        pdf.cell(20, 8, "TC DB(min)", 1, 0, 'C', True) # Nueva columna de validación
+        pdf.cell(30, 8, "Real (Pzs/h)", 1, 0, 'C', True)
+        pdf.cell(30, 8, "Est. (Pzs/h)", 1, 1, 'C', True)
         
-        pdf.set_font("Arial", "", 9)
+        pdf.set_font("Arial", "", 8)
         for _, r in comp_prod.iterrows():
-            pdf.cell(50, 7, str(r['Máquina'])[:22], 1)
-            pdf.cell(70, 7, str(r['Código Producto'])[:35], 1)
-            pdf.cell(35, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
-            pdf.cell(35, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
+            pdf.cell(45, 7, str(r['Máquina'])[:22], 1)
+            pdf.cell(65, 7, str(r['Código Producto'])[:35], 1)
+            pdf.cell(20, 7, f"{r['Tiempo_Ciclo_DB']:.3f}", 1, 0, 'C')
+            pdf.cell(30, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
+            pdf.cell(30, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 1, 'C')
         pdf.ln(5)
 
-        # ---- SECCIÓN 3: Histórico Diario ----
+        # ---- SECCIÓN 3: Histórico Diario con Cant. Productos ----
         for m_id in maquinas_seleccionadas:
             dat_pdf = prom_d[prom_d['Máquina'] == m_id]
             if dat_pdf.empty: continue
@@ -276,16 +268,18 @@ if len(rango_fechas) == 2:
             
             pdf.set_font("Arial", "B", 10)
             pdf.set_fill_color(*AZUL_FONDO)
-            pdf.cell(70, 8, "Maquina", 1, 0, 'C', True)
-            pdf.cell(50, 8, "Fecha", 1, 0, 'C', True)
-            pdf.cell(70, 8, "Promedio Diario (Pzs/h)", 1, 1, 'C', True)
+            pdf.cell(60, 8, "Maquina", 1, 0, 'C', True)
+            pdf.cell(40, 8, "Fecha", 1, 0, 'C', True)
+            pdf.cell(40, 8, "Cant. Productos", 1, 0, 'C', True) # Columna solicitada
+            pdf.cell(50, 8, "Promedio Diario", 1, 1, 'C', True)
             
             pdf.set_font("Arial", "", 9)
             for _, r in dat_pdf.iterrows():
                 fecha_format = r['Fecha'].strftime('%d/%m/%Y')
-                pdf.cell(70, 7, str(r['Máquina'])[:30], 1, 0, 'C')
-                pdf.cell(50, 7, fecha_format, 1, 0, 'C')
-                pdf.cell(70, 7, f"{r['P']:.2f}", 1, 1, 'C')
+                pdf.cell(60, 7, str(r['Máquina'])[:28], 1, 0, 'C')
+                pdf.cell(40, 7, fecha_format, 1, 0, 'C')
+                pdf.cell(40, 7, str(int(r['Cantidad_Productos'])), 1, 0, 'C')
+                pdf.cell(50, 7, f"{r['P']:.2f}", 1, 1, 'C')
             
             fig_t, ax_t = plt.subplots(figsize=(10, 3.5))
             ax_t.plot(dat_pdf['Fecha'].dt.strftime('%d/%m'), dat_pdf['P'], marker='o', color='#00509E')
