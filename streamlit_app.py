@@ -49,7 +49,7 @@ st.set_page_config(page_title="Generador de Reportes de Producción", layout="ce
 st.title("📊 Generador de Reporte Ejecutivo (PDF)")
 
 # ==========================================
-# 1. FUNCIÓN DE EXTRACCIÓN SQL INTELIGENTE
+# 1. FUNCIÓN DE EXTRACCIÓN SQL (CRUCE D_01 y D_03)
 # ==========================================
 @st.cache_data(ttl=300)
 def fetch_produccion_hora(fecha_ini, fecha_fin):
@@ -57,48 +57,53 @@ def fetch_produccion_hora(fecha_ini, fecha_fin):
     ini_str = fecha_ini.strftime('%Y-%m-%d')
     fin_str = fecha_fin.strftime('%Y-%m-%d')
 
-    # 👇 ¡AQUÍ ES DONDE CAMBIARÁS EL NOMBRE CUANDO EL DETECTIVE LO ENCUENTRE! 👇
-    TABLA_PRODUCCION = "PROD_H_01" 
-    
     try:
-        query = f"""
+        # 1. Obtenemos las Piezas por Hora desde PROD_D_01
+        query_piezas = f"""
             SELECT 
-                p.Date as Fecha,
+                CAST(p.Date as DATE) as Fecha,
                 c.Name as Máquina,
                 pr.Code as [Código Producto],
-                p.Good as Buenas,
-                p.Rework as Retrabajo,
-                p.Scrap as Observadas,
-                p.ProductiveTime as [Tiempo Producción (Min)],
-                pr.CycleTime as [Tiempo Ciclo],
-                p.Hour as Hora
-            FROM {TABLA_PRODUCCION} p 
+                SUM(p.Good) as Buenas,
+                SUM(p.Rework) as Retrabajo,
+                SUM(p.Scrap) as Observadas,
+                DATEPART(HOUR, p.Date) as Hora
+            FROM PROD_D_01 p 
             JOIN CELL c ON p.CellId = c.CellId
             JOIN PRODUCT pr ON p.ProductId = pr.ProductId
-            WHERE p.Date BETWEEN '{ini_str}' AND '{fin_str}'
+            WHERE CAST(p.Date as DATE) BETWEEN '{ini_str}' AND '{fin_str}'
+            GROUP BY CAST(p.Date as DATE), c.Name, pr.Code, DATEPART(HOUR, p.Date)
         """
-        df = conn.query(query)
-        return df, None
+        df_pzs = conn.query(query_piezas)
+
+        # 2. Obtenemos el Tiempo Productivo por Hora desde PROD_D_03
+        query_tiempos = f"""
+            SELECT 
+                CAST(p.Date as DATE) as Fecha,
+                c.Name as Máquina,
+                DATEPART(HOUR, p.Date) as Hora,
+                SUM(p.ProductiveTime) as [Tiempo Producción (Min)]
+            FROM PROD_D_03 p 
+            JOIN CELL c ON p.CellId = c.CellId
+            WHERE CAST(p.Date as DATE) BETWEEN '{ini_str}' AND '{fin_str}'
+            GROUP BY CAST(p.Date as DATE), c.Name, DATEPART(HOUR, p.Date)
+        """
+        df_times = conn.query(query_tiempos)
+
+        if df_pzs.empty:
+            return pd.DataFrame(), None
+
+        # 3. Cruzamos ambas tablas
+        df_merged = pd.merge(df_pzs, df_times, on=['Fecha', 'Máquina', 'Hora'], how='left')
+        
+        # Rellenamos nulos y forzamos el Tiempo de Ciclo a 0 (ya que no lo sacamos de BD para evitar crash)
+        df_merged['Tiempo Producción (Min)'] = df_merged['Tiempo Producción (Min)'].fillna(0)
+        df_merged['Tiempo Ciclo'] = 0 
+        
+        return df_merged, None
         
     except Exception as e:
-        error_msg = str(e)
-        # Si el error es porque la tabla no existe (208 en SQL Server)
-        if "Invalid object name" in error_msg or "208" in error_msg:
-            try:
-                # El Detective busca en los metadatos de la BD
-                query_desc = """
-                    SELECT TABLE_NAME 
-                    FROM INFORMATION_SCHEMA.TABLES 
-                    WHERE TABLE_NAME LIKE '%PROD%' 
-                       OR TABLE_NAME LIKE '%HOUR%'
-                       OR TABLE_NAME LIKE '%H_%'
-                """
-                df_tablas = conn.query(query_desc)
-                return df_tablas, "TABLA_NO_ENCONTRADA"
-            except Exception as e2:
-                return pd.DataFrame(), f"Error grave consultando el esquema: {e2}"
-        
-        return pd.DataFrame(), error_msg
+        return pd.DataFrame(), str(e)
 
 # ==========================================
 # 2. FILTROS Y EJECUCIÓN
@@ -115,20 +120,10 @@ rango_fechas = st.date_input(
 if len(rango_fechas) == 2:
     inicio, fin = rango_fechas
     
-    with st.spinner("Conectando a SQL Server y obteniendo datos..."):
+    with st.spinner("Conectando a SQL Server y cruzando tablas D_01 y D_03..."):
         df_raw, status_error = fetch_produccion_hora(inicio, fin)
 
-    # ==========================================
-    # 🕵️ LÓGICA DEL DETECTIVE
-    # ==========================================
-    if status_error == "TABLA_NO_ENCONTRADA":
-        st.error("🚨 La tabla configurada no existe en la base de datos.")
-        st.info("El Modo Detective ha escaneado la base de datos y ha encontrado estas tablas relacionadas. "
-                "Busca la que contenga el detalle por hora (ej. `PROD_HOUR_01`, `PROD_H_03`, etc.):")
-        st.dataframe(df_raw, use_container_width=True)
-        st.warning("👉 Cuando sepas el nombre correcto, actualiza la variable `TABLA_PRODUCCION` en el código (línea 61) y vuelve a ejecutar.")
-        st.stop()
-    elif status_error:
+    if status_error:
         st.error(f"❌ Error de SQL Server: {status_error}")
         st.stop()
 
@@ -136,10 +131,8 @@ if len(rango_fechas) == 2:
         st.warning("La consulta fue exitosa pero no hay datos de producción para estas fechas.")
         st.stop()
 
-    with st.expander("🕵️ Inspeccionar Datos Crudos (Si quieres revisar columnas)", expanded=False):
-        st.success(f"✅ Se obtuvieron {len(df_raw)} filas de la base de datos.")
-        st.write("Columnas y tipos de datos:")
-        st.dataframe(pd.DataFrame(df_raw.dtypes, columns=['Tipo']).reset_index().rename(columns={'index':'Columna'}), use_container_width=True)
+    with st.expander("🕵️ Inspeccionar Datos Cruzados (Modo Detective)", expanded=False):
+        st.success(f"✅ Se obtuvieron {len(df_raw)} bloques horarios de la base de datos.")
         st.dataframe(df_raw.head(50), use_container_width=True)
 
     # Pre-procesamiento de datos extraídos
